@@ -1,0 +1,38 @@
+# Estilo unico para todo firmware compartilhado do laboratorio.
+# Base Google com 2 espacos e coluna 100 - mesma medida do .editorconfig.
+# Rodado pelo pre-commit; nao editar arquivo por arquivo.
+#
+# Os quatro ajustes abaixo do BasedOnStyle existem para preservar
+# alinhamento que carrega informacao. O padrao do Google desfaz os quatro,
+# e o resultado fica correto mas mais dificil de ler numa tabela de
+# pinagem ou num mapa de codigos.
+---
+Language: Cpp
+BasedOnStyle: Google
+IndentWidth: 2
+ColumnLimit: 100
+AccessModifierOffset: -2
+AlignAfterOpenBracket: Align
+AllowShortFunctionsOnASingleLine: Inline
+AllowShortIfStatementsOnASingleLine: WithoutElse
+BreakBeforeBraces: Attach
+DerivePointerAlignment: false
+PointerAlignment: Left
+SortIncludes: false
+SpacesBeforeTrailingComments: 2
+IncludeBlocks: Preserve
+
+# Tabela de pinagem: "#define PIN_ML_IN1  25" alinhado vira coluna, e
+# coluna se confere de relance contra o esquematico.
+AlignConsecutiveMacros: AcrossComments
+
+# Mesma razao para blocos de atribuicao em sequencia (preencher struct).
+AlignConsecutiveAssignments: Consecutive
+
+# Enum de estado e enum de canal: uma constante por linha, para caber
+# comentario ao lado de cada uma.
+AllowShortEnumsOnASingleLine: false
+
+# Mapa "codigo -> nome" em switch fica legivel em uma linha por caso;
+# quebrado em duas, a tabela triplica de altura e some da tela.
+AllowShortCaseLabelsOnASingleLine: true

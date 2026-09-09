@@ -1,0 +1,85 @@
+# =====================================================================
+#  pre-commit - portao automatico antes de cada commit
+#
+#  Instalar uma vez por clone:
+#      python -m pip install --user pre-commit commitizen
+#      pre-commit install --install-hooks
+#      pre-commit install --hook-type commit-msg
+#
+#  Rodar em tudo, sem commitar:
+#      pre-commit run --all-files
+#
+#  Mesma configuracao do laboratorio (repositorio Jaspy), com o escopo do
+#  clang-format apontando para o codigo deste projeto.
+# =====================================================================
+minimum_pre_commit_version: "3.5.0"
+fail_fast: false
+
+exclude: |
+  (?x)^(
+    \.pio/.*|
+    evidencias/.*|
+    .*\.map|
+    .*\.svg
+  )$
+
+repos:
+  # ---- Higiene basica de arquivo -----------------------------------
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: trailing-whitespace
+        args: [--markdown-linebreak-ext=md]
+      - id: end-of-file-fixer
+      - id: mixed-line-ending
+        args: [--fix=lf]
+      - id: check-merge-conflict
+      - id: check-yaml
+      # .vscode/*.json aceita comentario (JSONC); o hook padrao nao.
+      - id: check-json
+        exclude: ^\.vscode/
+      - id: check-toml
+      - id: check-case-conflict
+      - id: check-added-large-files
+        args: [--maxkb=1024]
+      - id: detect-private-key
+
+  # ---- Segredos: o hook que realmente importa ----------------------
+  - repo: https://github.com/gitleaks/gitleaks
+    rev: v8.21.2
+    hooks:
+      - id: gitleaks
+
+  # ---- Estilo do firmware ------------------------------------------
+  - repo: https://github.com/pre-commit/mirrors-clang-format
+    rev: v19.1.3
+    hooks:
+      - id: clang-format
+        files: ^(src|include|lib)/.*\.(c|cc|cpp|h|hpp|ino)$
+        types_or: [c, c++]
+
+  # ---- Mensagem de commit no padrao do repositorio -----------------
+  - repo: https://github.com/commitizen-tools/commitizen
+    rev: v3.31.0
+    hooks:
+      - id: commitizen
+        stages: [commit-msg]
+
+  # ---- Regras locais -----------------------------------------------
+  - repo: local
+    hooks:
+      - id: bloqueia-credencial
+        name: bloqueia arquivo de credencial real
+        entry: python scripts/hooks/bloqueia_credencial.py
+        language: system
+        pass_filenames: true
+
+      # O metodo do laboratorio depende do registro: previsao antes,
+      # medida depois. Projeto sem diario perde a divergencia, que e a
+      # informacao mais valiosa do ciclo.
+      - id: exige-diario
+        name: exige README.md e diario.md
+        entry: python scripts/hooks/exige_diario.py
+        language: system
+        pass_filenames: false
+        always_run: true

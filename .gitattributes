@@ -1,0 +1,32 @@
+# Fim de linha: LF em todo o repositorio.
+#
+# Sem esta regra, o Windows checa out com CRLF (core.autocrlf=true) e o hook
+# mixed-line-ending do pre-commit reescreve para LF - os dois brigam a cada
+# commit, e o diff enche de linha "modificada" que nao mudou nada.
+# `eol=lf` vence o autocrlf, entao git e pre-commit passam a concordar.
+* text=auto eol=lf
+
+# Scripts que o interpretador do Windows prefere com CRLF.
+*.bat text eol=crlf
+*.cmd text eol=crlf
+
+# Binarios: nunca normalizar, nunca tentar diff de texto.
+*.png  binary
+*.jpg  binary
+*.jpeg binary
+*.gif  binary
+*.mp4  binary
+*.wav  binary
+*.pdf  binary
+*.zip  binary
+*.stl  binary
+*.step binary
+*.3mf  binary
+*.bin  binary
+*.elf  binary
+*.hex  binary
+
+# Arquivos de firmware e CAD contam como texto para o diff, mas o Gerber
+# vem de ferramenta externa e nao deve ser reformatado por ninguem.
+*.gbr -text
+*.drl -text

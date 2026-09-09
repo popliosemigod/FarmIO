@@ -1,0 +1,16 @@
+{
+  // Extensoes que a bancada precisa. O VS Code oferece a instalacao
+  // sozinho ao abrir esta pasta, entao maquina nova ja nasce pronta.
+  "recommendations": [
+    "platformio.platformio-ide",
+    "ms-vscode.cpptools",
+    "mhutchie.git-graph",
+    "ms-python.python",
+    "editorconfig.editorconfig",
+    "redhat.vscode-yaml"
+  ],
+  "unwantedRecommendations": [
+    // A extensao oficial do Arduino briga com o IntelliSense do PlatformIO.
+    "vsciot-vscode.vscode-arduino"
+  ]
+}

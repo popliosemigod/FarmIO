@@ -1,0 +1,49 @@
+# ---- Segredos: nunca versionar ----
+include/secrets.h
+**/secrets.h
+**/secrets.local.*
+*.key
+*.pem
+
+# ---- Build embarcado ----
+.pio/
+.pioenvs/
+.piolibdeps/
+build/
+*.elf
+*.bin
+*.hex
+*.map
+compile_commands.json
+
+# ---- VS Code (o que a maquina gera, nao o que o projeto declara) ----
+.vscode/settings.json
+.vscode/c_cpp_properties.json
+.vscode/launch.json
+.vscode/ipch/
+.vscode/.browse.c_cpp.db*
+
+# ---- Evidencias de bancada (pesadas e volateis) ----
+evidencias/**/*.jpg
+evidencias/**/*.png
+evidencias/**/*.mp4
+evidencias/**/*.wav
+!evidencias/**/.gitkeep
+
+# ---- CAD / fabricacao ----
+*.3mf
+*.gcode
+*-bak.*
+*-backups/
+
+# ---- Python ----
+__pycache__/
+*.py[cod]
+.venv/
+
+# ---- Sistema operacional ----
+Thumbs.db
+desktop.ini
+ehthumbs.db
+*.tmp
+*.log
