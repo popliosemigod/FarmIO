@@ -23,6 +23,9 @@
 
 #include "config.h"
 #include "sensores.h"
+#include "energia.h"
+#include "anel.h"
+#include "farmio_visao.h"
 
 namespace Web {
 
@@ -31,11 +34,19 @@ inline WebServer& servidor() {
   return instancia;
 }
 
-// IP da ESP32-CAM. Configuravel em tempo de execucao pela rota /cam,
-// porque o DHCP pode mudar o endereco dela entre um ensaio e outro.
-inline String& ipDaCamera() {
+// IP da ESP32-CAM. Em regime ele chega SOZINHO pelo enlace: a camera
+// anuncia o proprio endereco a cada ping, entao o DHCP pode trocar o IP
+// dela a vontade que a pagina continua achando o video. A rota /cam
+// continua existindo para o caso de a camera estar sem enlace e alguem
+// precisar apontar o video na mao.
+inline String& ipManual() {
   static String ip = "";
   return ip;
+}
+
+inline String ipDaCamera() {
+  if (V.ip[0]) return String(V.ip);
+  return ipManual();
 }
 
 inline size_t jsonSensores(char* buf, size_t len) {
@@ -49,19 +60,27 @@ inline size_t jsonSensores(char* buf, size_t len) {
     strcpy(umid, "null");
   }
 
-  return (size_t)snprintf(buf, len,
-                          "{\"no\":\"%s\",\"fw\":\"%s\",\"uptime_s\":%lu,"
-                          "\"temperatura_c\":%s,\"umidade_ar_pct\":%s,"
-                          "\"solo_adc\":%u,\"solo_faixa\":\"%s\",\"solo_nivel\":%u,"
-                          "\"tanque_pct\":%u,\"tanque_adc\":%u,"
-                          "\"bomba_ligada\":%s,\"bomba_bloqueio\":\"%s\","
-                          "\"bomba_pulsos\":%u,\"bomba_total_s\":%lu,"
-                          "\"riscos\":%u,\"rssi\":%d,\"heap\":%lu}",
-                          FARMIO_NOME, FARMIO_VERSAO, (unsigned long)(millis() / 1000UL), temp,
-                          umid, L.soloAdc, faixa, L.soloFaixa, L.tanquePct, L.nivelAdc,
-                          B.ligada ? "true" : "false", B.bloqueioAtual ? B.bloqueioAtual : "",
-                          B.pulsos, (unsigned long)(B.tempoTotalMs / 1000UL), riscosAtivos,
-                          WiFi.RSSI(), (unsigned long)ESP.getFreeHeap());
+  return (size_t)snprintf(
+      buf, len,
+      "{\"no\":\"%s\",\"fw\":\"%s\",\"uptime_s\":%lu,"
+      "\"temperatura_c\":%s,\"umidade_ar_pct\":%s,"
+      "\"solo_adc\":%u,\"solo_faixa\":\"%s\",\"solo_nivel\":%u,"
+      "\"tanque_pct\":%u,\"tanque_adc\":%u,"
+      "\"bomba_ligada\":%s,\"bomba_bloqueio\":\"%s\","
+      "\"bomba_pulsos\":%u,\"bomba_total_s\":%lu,"
+      "\"riscos\":%u,\"rssi\":%d,\"heap\":%lu,"
+      "\"cam_enlace\":%s,\"cam_ip\":\"%s\",\"cam_quadros\":%u,"
+      "\"cam_falhas\":%u,\"cam_resets\":%u,\"cam_ms\":%u,"
+      "\"planta\":%s,\"planta_prob\":%u,\"planta_media\":%u,"
+      "\"planta_classe\":%u,\"planta_cobertura\":%u,\"planta_flags\":%u,"
+      "\"energia_teto_ma\":%u,\"energia_ma\":%u,\"anel_brilho\":%u}",
+      FARMIO_NOME, FARMIO_VERSAO, (unsigned long)(millis() / 1000UL), temp, umid, L.soloAdc, faixa,
+      L.soloFaixa, L.tanquePct, L.nivelAdc, B.ligada ? "true" : "false",
+      B.bloqueioAtual ? B.bloqueioAtual : "", B.pulsos, (unsigned long)(B.tempoTotalMs / 1000UL),
+      riscosAtivos, WiFi.RSSI(), (unsigned long)ESP.getFreeHeap(), V.enlaceOk ? "true" : "false",
+      V.ip, V.quadros, V.falhas, V.resets, V.msCamera, V.temPlanta ? "true" : "false",
+      V.probabilidade, V.mediaFiltrada, V.classe, V.cobertura, V.flags, Energia::teto(),
+      Energia::estimativaMa(V.enlaceOk, Anel::brilhoAtual(), B.ligada), Anel::brilhoAtual());
 }
 
 static const char PAGINA[] PROGMEM = R"HTML(<!doctype html><html lang=pt-BR><meta charset=utf-8>
@@ -93,6 +112,10 @@ img.cam{width:100%;border-radius:14px;margin-top:12px;background:#000;min-height
 <div class="carta larga"><div class=rot>Tanque</div><div class=val><span id=n>--</span><span class=un> %</span></div>
 <div class=barra><i id=bar></i></div></div>
 <div class="carta larga"><div class=rot>Irrigacao</div><div class=val id=b>--</div></div>
+<div class="carta larga"><div class=rot>Camera</div><div class=val id=p>--</div>
+<div class=barra><i id=pb></i></div><div class=rot id=pd></div></div>
+<div class="carta larga"><div class=rot>Energia</div><div class=val><span id=e>--</span><span class=un> mA estimados</span></div>
+<div class=barra><i id=eb></i></div><div class=rot id=ed></div></div>
 </div>
 <img class=cam id=cam alt="video da ESP32-CAM">
 <div class=pe id=pe></div>
@@ -112,6 +135,29 @@ async function tick(){
   const rs=$('risco');
   if(d.riscos){rs.style.display='block';rs.textContent=nomeRisco(d.riscos);}
   else rs.style.display='none';
+
+  // Camera. A pagina distingue os tres casos que importam: fio caido,
+  // camera viva sem planta, camera viva com planta. Mostrar so
+  // "sem planta" nos tres seria mentir em dois deles.
+  const cl=['sem planta','provavel','planta'];
+  if(!d.cam_enlace){$('p').textContent='sem enlace';$('pb').style.width='0';}
+  else{
+   $('p').innerHTML=(d.planta?'<span class=on>planta a vista</span>':cl[d.planta_classe]||'--');
+   $('pb').style.width=(d.planta_media/10)+'%';
+  }
+  $('pd').textContent=(d.planta_prob/10).toFixed(0)+'% neste quadro · '+
+   (d.planta_cobertura/10).toFixed(0)+'% de verde · '+d.cam_quadros+' quadros · '+
+   d.cam_falhas+' falhas · '+d.cam_resets+' resets'+
+   ((d.planta_flags&1)?' · LUZ BAIXA':'');
+
+  // Energia: a barra e o quanto do orcamento da porta ja esta gasto.
+  $('e').textContent=d.energia_ma;
+  $('eb').style.width=Math.min(100,d.energia_ma*100/d.energia_teto_ma)+'%';
+  $('ed').textContent='teto '+d.energia_teto_ma+' mA · anel em '+d.anel_brilho+'/255';
+
+  // O video se acha sozinho: o IP vem do enlace, nao da mao de ninguem.
+  const im=$('cam');
+  if(d.cam_ip && im.dataset.ip!==d.cam_ip){im.dataset.ip=d.cam_ip;im.src='http://'+d.cam_ip+':81/stream';}
  }catch(e){$('sub').textContent='sem resposta do no';}
 }
 function nomeRisco(m){
@@ -121,9 +167,10 @@ function nomeRisco(m){
  if(m&4)n.push('TANQUE VAZIO');
  if(m&8)n.push('SOLO ENCHARCADO');
  if(m&16)n.push('SENSOR SEM RESPOSTA');
+ if(m&32)n.push('CAMERA SEM RESPOSTA');
+ if(m&64)n.push('NENHUMA PLANTA A VISTA');
  return n.join(' · ');
 }
-fetch('/cam').then(r=>r.text()).then(ip=>{if(ip)$('cam').src='http://'+ip+':81/stream';});
 tick();setInterval(tick,2000);
 </script></html>)HTML";
 
@@ -133,7 +180,7 @@ inline void begin() {
   s.on("/", HTTP_GET, []() { servidor().send_P(200, "text/html; charset=utf-8", PAGINA); });
 
   s.on("/sensores", HTTP_GET, []() {
-    char buf[640];
+    char buf[1100];
     jsonSensores(buf, sizeof(buf));
     servidor().sendHeader("Access-Control-Allow-Origin", "*");
     servidor().send(200, "application/json", buf);
@@ -141,7 +188,7 @@ inline void begin() {
 
   // GET devolve o IP da camera; POST/GET com ?ip= grava.
   s.on("/cam", HTTP_ANY, []() {
-    if (servidor().hasArg("ip")) ipDaCamera() = servidor().arg("ip");
+    if (servidor().hasArg("ip")) ipManual() = servidor().arg("ip");
     servidor().send(200, "text/plain", ipDaCamera());
   });
 

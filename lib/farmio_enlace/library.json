@@ -1,0 +1,7 @@
+{
+  "name": "farmio_enlace",
+  "version": "1.0.0",
+  "description": "Protocolo de quadros do enlace serial entre o ESP32-C3 do vaso e a ESP32-CAM",
+  "frameworks": "*",
+  "platforms": "*"
+}

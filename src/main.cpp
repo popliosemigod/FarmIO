@@ -23,7 +23,9 @@
 #include <WiFi.h>
 
 #include "config.h"
+#include "energia.h"
 #include "sensores.h"
+#include "camera.h"
 #include "bomba.h"
 #include "anel.h"
 #include "tela.h"
@@ -46,6 +48,7 @@
 
 // ---- definicao dos globais declarados em config.h -------------------
 Leituras L;
+Visto V;
 EstadoBomba B;
 uint8_t riscosAtivos = RISCO_NENHUM;
 
@@ -123,7 +126,7 @@ static void heartbeatSerial() {
   if ((int32_t)(agora - proximo) < 0) return;
   proximo = agora + INTERVALO_SERIAL_MS;
 
-  char json[640];
+  char json[1100];
   Web::jsonSensores(json, sizeof(json));
   Serial.println(json);
 }
@@ -138,18 +141,24 @@ void setup() {
   Serial.printf("  build %s %s\n", __DATE__, __TIME__);
   Serial.println(F("====================================================="));
 
+  // Energia primeiro de tudo: e ela que decide o teto de brilho e se a
+  // bomba pode existir. Decidir isso depois de acender o anel seria
+  // acender o anel para so entao descobrir que nao cabia.
+  Energia::begin();
+
   memset(&L, 0, sizeof(L));
   memset(&B, 0, sizeof(B));
   L.temperaturaC = NAN;
   L.umidadeArPct = NAN;
   L.soloFaixa    = SOLO_INVALIDO;
 
-  pinMode(PIN_LED_PLACA, OUTPUT);
+  if (PIN_LED_PLACA >= 0) pinMode(PIN_LED_PLACA, OUTPUT);
   pinMode(PIN_BOTAO, INPUT_PULLUP);
 
   Bomba::begin();  // primeiro de todos: garante bomba desligada no boot
   Anel::begin();
   Sens::begin();
+  Camera::begin();
 
   if (Tela::begin()) {
     Tela::telaAbertura();
@@ -170,20 +179,25 @@ void loop() {
   const bool ligando = (int32_t)(millis() - bootAte) < 0;
 
   Sens::tick();
-  riscosAtivos = Sens::avaliaRiscos();
+  // A camera entra com 'B.ligada' porque o orcamento de energia nao
+  // deixa os dois picos - bomba girando e camera capturando - caberem na
+  // mesma porta USB. Ver energia.h.
+  Camera::tick(B.ligada);
+  riscosAtivos = (uint8_t)(Sens::avaliaRiscos() | Camera::riscos());
 
   Bomba::tick();
   Rede::tick();
   Web::tick();
 
   Anel::reflete(riscosAtivos, ligando);
+  Anel::ajustaBrilho(V.enlaceOk, B.ligada);
   Anel::tick();
 
   if (!ligando) Tela::tick(riscosAtivos);
 
   // LED da placa: aceso enquanto irriga, apagado no resto. E o
   // diagnostico que sobra quando nem display nem rede respondem.
-  digitalWrite(PIN_LED_PLACA, B.ligada ? HIGH : LOW);
+  if (PIN_LED_PLACA >= 0) digitalWrite(PIN_LED_PLACA, B.ligada ? HIGH : LOW);
 
   heartbeatSerial();
 }

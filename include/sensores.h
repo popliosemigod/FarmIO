@@ -132,7 +132,7 @@ inline uint8_t avaliaRiscos() {
 
 // Nome do primeiro risco ativo, para a tela de alerta.
 inline const char* tituloDoRisco(uint8_t riscos) {
-  for (uint8_t i = 0; i < 5; i++) {
+  for (uint8_t i = 0; i < RISCO_QUANTOS; i++) {
     if (riscos & (1 << i)) return RISCO_TITULO[i];
   }
   return "";

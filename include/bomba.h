@@ -17,6 +17,7 @@
 #include <Arduino.h>
 
 #include "config.h"
+#include "energia.h"
 
 namespace Bomba {
 
@@ -45,9 +46,11 @@ inline void desliga(const char* motivo) {
   }
   B.duty = 0;
   pwmWrite(0);
+#ifndef BOMBA_PINO_UNICO
   digitalWrite(PIN_BOMBA_IN1, LOW);
   digitalWrite(PIN_BOMBA_IN2, LOW);
   digitalWrite(PIN_BOMBA_STBY, LOW);
+#endif
   B.bloqueioAtual = motivo;
 }
 
@@ -57,28 +60,50 @@ inline void liga() {
     B.ligadaDesde = millis();
     B.pulsos++;
   }
+#ifndef BOMBA_PINO_UNICO
   digitalWrite(PIN_BOMBA_STBY, HIGH);
   digitalWrite(PIN_BOMBA_IN1, HIGH);
   digitalWrite(PIN_BOMBA_IN2, LOW);
+#endif
   B.duty = BOMBA_PWM_MAX;
   pwmWrite(B.duty);
   B.bloqueioAtual = "";
 }
 
 inline void begin() {
+#ifndef BOMBA_PINO_UNICO
   pinMode(PIN_BOMBA_IN1, OUTPUT);
   pinMode(PIN_BOMBA_IN2, OUTPUT);
   pinMode(PIN_BOMBA_STBY, OUTPUT);
+#endif
   pwmSetup();
   desliga("boot");
 }
 
 // Devolve o motivo do bloqueio, ou nullptr se pode irrigar.
+//
+// A ORDEM IMPORTA: o primeiro motivo encontrado e o que aparece na tela,
+// e ele tem de ser o mais fundamental. Energia vem antes de tudo porque
+// e o unico bloqueio que nao adianta esperar passar - com a bomba de
+// 12 V numa porta USB, nao ha nivel de tanque nem umidade de solo que
+// mude a resposta.
 inline const char* motivoDeBloqueio() {
+  const char* energia = Energia::bombaBloqueadaPorEnergia(V.enlaceOk);
+  if (energia) return energia;
+
   if (L.tanquePct == 0) return "tanque vazio";
   if (L.soloFaixa == SOLO_EXTREMAMENTE_ALTA) return "solo encharcado";
   if (L.soloFaixa == SOLO_INVALIDO) return "sem leitura de solo";
   if (B.tempoTotalMs > BOMBA_LIMITE_MS) return "limite de irrigacao do ciclo";
+
+#if BOMBA_EXIGE_PLANTA
+  // Desligado por padrao, e a razao esta em config.h: camera suja ou as
+  // escuras viraria "nao ha planta", e a planta secaria por causa de uma
+  // lente empoeirada. So ligar isto depois de medir o falso negativo com
+  // planta de verdade.
+  if (V.enlaceOk && !V.temPlanta) return "nenhuma planta a vista";
+#endif
+
   return nullptr;
 }
 

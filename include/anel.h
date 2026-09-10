@@ -18,6 +18,7 @@
 #include <Arduino.h>
 
 #include "config.h"
+#include "energia.h"
 
 namespace Anel {
 
@@ -45,10 +46,33 @@ inline uint32_t& marcaDoModo() {
 
 inline void begin() {
   tira().begin();
-  tira().setBrightness(ANEL_BRILHO);
+  // Comeca no escuro: o brilho de regime e calculado no primeiro tick, a
+  // partir do orcamento de energia. Acender em ANEL_BRILHO aqui seria
+  // pedir 150 mA no instante em que a camera tambem esta bootando - o
+  // pico coincidente que derruba a porta USB.
+  tira().setBrightness(0);
   tira().clear();
   tira().show();
   marcaDoModo() = millis();
+}
+
+// O brilho nao e constante: e o que sobra do orcamento depois de pagar o
+// C3, a camera, o display e o sensor. Recalculado a cada quadro porque a
+// camera entra e sai do orcamento conforme o enlace vive ou morre.
+inline uint8_t& brilhoAtual() {
+  static uint8_t b = 0;
+  return b;
+}
+
+inline void ajustaBrilho(bool cameraViva, bool bombaLigada) {
+  const uint8_t alvo = Energia::brilhoPermitido(cameraViva, bombaLigada);
+  if (alvo == brilhoAtual()) return;
+  // Um degrau por quadro (25 fps): a mudanca de brilho vira uma rampa de
+  // fracao de segundo em vez de um salto. O pedido era que a LED nao
+  // gerasse desconforto visual, e salto de brilho e desconforto.
+  brilhoAtual() =
+      alvo > brilhoAtual() ? (uint8_t)(brilhoAtual() + 1) : (uint8_t)(brilhoAtual() - 1);
+  tira().setBrightness(brilhoAtual());
 }
 
 inline void setModo(Modo m) {

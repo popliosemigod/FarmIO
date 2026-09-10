@@ -19,6 +19,7 @@
 
 #include "config.h"
 #include "sensores.h"
+#include "farmio_visao.h"
 
 namespace Tela {
 
@@ -89,6 +90,20 @@ inline void telaInicial() {
   d.setCursor(4, 22);
   d.print(buf);
 
+  // O que a camera esta vendo, em tres caracteres na sobra da linha do
+  // ar. Espaco de OLED e caro; a informacao completa vive no JSON e na
+  // pagina. Aqui basta responder "a camera esta viva e enxerga planta?".
+  d.setCursor(78, 22);
+  if (!V.enlaceOk) {
+    d.print("CAM --");
+  } else if (V.flags & Enlace::FLAG_LUZ_BAIXA) {
+    d.print("ESCURO");
+  } else if (V.temPlanta) {
+    d.print("PLANTA");
+  } else {
+    d.print("VAZIO ");
+  }
+
   d.setCursor(4, 34);
   d.print("SOLO  ");
   d.print(SOLO_NOME[L.soloFaixa <= SOLO_INVALIDO ? L.soloFaixa : SOLO_INVALIDO]);
@@ -129,6 +144,10 @@ inline void telaDeRisco(uint8_t riscos) {
     acao = "verifique o sol";
   else if (riscos & RISCO_SENSOR_MUDO)
     acao = "cheque o DHT22";
+  else if (riscos & RISCO_CAMERA_MUDA)
+    acao = "cheque o fio da camera";
+  else if (riscos & RISCO_SEM_PLANTA)
+    acao = "vaso parece vazio";
   centralizado(acao, 48, 1);
 
   d.display();
