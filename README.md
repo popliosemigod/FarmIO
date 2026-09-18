@@ -47,7 +47,7 @@ aguenta.
 | Tanque | sensor de nível tipo pente (Funduino) |
 | Tela | OLED SSD1306 128×64, I²C |
 | Luz | anel de 16 LEDs WS2812 (5050) |
-| Bomba | RS-385 12 V via TB6612FNG, **um pino de controle** |
+| Bomba | RS-385 12 V via ponte H dupla mini, **um pino de controle** |
 
 Pinagem completa, alimentação e as armadilhas de ADC e strapping estão em
 [`docs/02-hardware-e-pinagem.md`](docs/02-hardware-e-pinagem.md).

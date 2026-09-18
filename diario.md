@@ -76,6 +76,63 @@ real, o vaso irriga na hora errada — o firmware está correto, os números nã
 
 ---
 
+### 2026-09-18 — O driver da bomba não é o que estava escrito
+
+**Alvo:** documentar a pinagem da ponte H. Virou outra coisa no meio.
+
+**O que aconteceu:** ao responder quantos pinos a ponte H ocupa, respondi pela
+pinagem do **TB6612FNG**, que é o que estava escrito em todo o repositório desde a
+v0.1. Henrique corrigiu: o driver da bancada é um módulo mini, e ao conferir o
+header ele relatou **`IN1` a `IN4`, `GND`, sem pinos de enable, e tensão de até
+11 V**.
+
+**O número que importa é o teto de 11 V.** Ele não é uma diferença de pinagem — é
+uma contradição com a bomba do projeto:
+
+| | Especificação |
+| --- | --- |
+| Driver na bancada | até **11 V** |
+| Bomba RS-385 | **12 V** nominais |
+
+E ele também diz que o chip **não é um L298N**, apesar de o módulo ser vendido com
+esse nome: o L298N aceita 46 V na saída de potência. Pelo teto de tensão, as
+candidatas prováveis são DRV8833 (2,7–10,8 V, 1,5 A por canal) e L9110S/HG7881
+(2,5–12 V, 800 mA por canal).
+
+**A contagem de pinos não mudou, mas a margem de segurança sim.** Continua um pino
+— GPIO3, agora no `IN1`, com `IN2` no GND. O que sumiu foi o **STBY**: com o
+TB6612FNG havia dois mecanismos garantindo bomba parada durante o boot, o STBY em
+pull-down e o duty zero. Este módulo não tem enable nem STBY. **O pull-down de
+10 kΩ deixou de ser reforço e passou a ser o único cadeado** — se faltar na solda,
+o pino do C3 fica em alta impedância durante o boot inteiro e não há nada atrás.
+
+**Corrigido no firmware:** `BOMBA_PWM_FREQ` caiu de 20 000 para 1 000. Os 20 kHz
+vinham do TB6612FNG, que é MOSFET; qualquer uma das candidatas atuais prefere
+frequência baixa, e num Darlington 20 kHz seria forno. Na prática o ruído audível
+não volta, porque a bomba só é acionada em duty 100%, onde não há chaveamento
+nenhum — mas o número estava errado para o hardware real.
+
+**Divergência de método, e é a lição da entrada:** o repositório afirmava
+`TB6612FNG` em seis lugares — `config.h`, `bomba.h`, `main.cpp`, o README e duas
+seções de `docs/02`. Nenhum deles era medida; todos eram a mesma suposição
+propagada da v0.1, que ganhou aparência de fato por repetição. Um componente que o
+firmware aciona mas que ninguém conferiu na bancada é exatamente o tipo de número
+que o diário existe para marcar como não verificado, e ele passou seis commits sem
+essa marca.
+
+**Decisão:** não ligar a bomba de 12 V neste driver enquanto o conflito estiver
+aberto. `BOMBA_DRIVER_VMAX_V` entrou no `config.h` com o valor 11, apontando para
+esta entrada.
+
+**Próximo passo, e é de bancada:** ler a marcação impressa no chip do módulo. É ela
+que decide entre 800 mA e 1,5 A — e a corrente de partida da RS-385, que é a de
+rotor travado, passa de 2 A por algumas dezenas de milissegundos. As três saídas
+estão em `docs/02-hardware-e-pinagem.md`; a preferida é a bomba de diafragma de
+5 V, que resolve tensão e corrente de uma vez e é a mesma que o orçamento de
+energia já apontava como a única que irriga em USB.
+
+---
+
 ### 2026-09-09 — Duas placas ligadas, um classificador treinado e o orçamento de USB
 
 **Alvo:** três coisas, na ordem em que dependem uma da outra. (1) Ligar o ESP32-C3

@@ -47,7 +47,7 @@ solda que faltavam dois.
 | Umidade do solo (AO) | **0** | ADC1_CH0 | alimentar o sensor em **3V3** |
 | Nível do tanque (AO) | **1** | ADC1_CH1 | alimentar o sensor em **3V3** |
 | Reserva analógica | 4 | ADC1_CH4 | livre — luminosidade, pH, segundo vaso |
-| Bomba — PWM | **3** | saída LEDC | 20 kHz, **pull-down de 10 kΩ** |
+| Bomba — IN1 do driver | **3** | saída LEDC | 1 kHz, **pull-down de 10 kΩ** |
 | DHT22 dados | 5 | digital | pull-up de 10 kΩ para 3V3 |
 | Anel WS2812 (dados) | 6 | saída | 16 pixels |
 | Reset da ESP32-CAM | 7 | dreno aberto | pull-up de 10 kΩ |
@@ -71,21 +71,58 @@ GPIO8 — é inofensivo, e custa 1–3 mA.
 Na DevKit V1 a bomba ocupava quatro pinos: PWMA, AIN1, AIN2 e STBY do TB6612FNG.
 No C3 não há quatro pinos para gastar com uma bomba que gira num sentido só.
 
-A solução mantém o driver testado e joga a direção para o cobre:
+O driver que está na bancada **não é o TB6612FNG**. É um módulo de ponte H dupla
+pequeno, com header `IN1`..`IN4` e `GND`, **sem pinos de enable**. A ligação:
 
 ```
-TB6612FNG      AIN1 ── 3V3        (sentido fixo, na placa)
-               AIN2 ── GND
-               STBY ── 3V3
-               PWMA ── GPIO3 do C3, com pull-down de 10 kΩ para GND
+módulo     IN1  ←── GPIO3 do C3, com pull-down de 10 kΩ para GND
+           IN2  ──── GND                  (sentido fixo, no cobre)
+           IN3  ──── livre                (segundo canal sem fio)
+           IN4  ──── livre
 ```
 
-Com PWMA em nível baixo, a saída do driver fica desligada independentemente de
-STBY. O resistor de pull-down garante duty zero durante todo o boot — **a mesma
-garantia que o STBY dava, com três pinos a menos**.
+Com as duas entradas do canal em nível baixo, a ponte fica em roda livre e a bomba
+não gira. É esse o estado que o pull-down garante durante todo o boot.
+
+> **O pull-down deixou de ser reforço e virou o único mecanismo.** Com o TB6612FNG
+> havia dois cadeados — o STBY em pull-down e o duty zero. Este módulo não tem
+> enable nem STBY. Sem o resistor, o pino do C3 fica em alta impedância durante o
+> boot inteiro e não há nada atrás para segurar a bomba.
 
 O `config.h` cobre os dois arranjos: `BOMBA_PINO_UNICO` está definido só na
 pinagem do C3.
+
+### Conflito aberto: 11 V de driver para uma bomba de 12 V
+
+O módulo aceita **até 11 V** na alimentação de potência. A RS-385 é de **12 V
+nominais**. Os dois números não convivem, e isso não é margem de engenharia: é
+especificação estourada.
+
+O teto de 11 V também diz que o chip não é um L298N, apesar do nome com que o
+módulo é vendido — o L298N aceita 46 V. Pelo teto, as duas candidatas prováveis
+são:
+
+| Chip | Tensão | Corrente contínua por canal |
+| --- | --- | --- |
+| DRV8833 | 2,7–10,8 V | 1,5 A (2 A de pico) |
+| L9110S / HG7881 | 2,5–12 V | 800 mA |
+
+A diferença entre as duas decide se o driver serve para alguma bomba: a corrente
+de partida de um motor CC é a corrente de rotor travado, que na RS-385 passa de
+2 A por algumas dezenas de milissegundos. **Ler a marcação do chip é o que fecha
+essa conta**, e é o próximo passo de bancada.
+
+As três saídas, em ordem de preferência:
+
+1. **Bomba de diafragma de 5 V (~350 mA).** Resolve os dois problemas de uma vez —
+   cabe no teto de tensão do driver, cabe na corrente dele, e é exatamente a bomba
+   que o [orçamento de energia](06-energia-usb.md) já apontava como a única que
+   irriga alimentada por USB.
+2. **MOSFET avulso no lugar da ponte.** Um IRLZ44N com diodo de roda livre aciona
+   a RS-385 de 12 V com um pino, sem teto de tensão atrapalhando. Direção fixa não
+   precisa de ponte H nenhuma — a ponte sempre foi peça a mais neste projeto.
+3. **Alimentar o módulo em 11 V.** Funciona, com menos vazão, e só se a corrente
+   do chip aguentar a partida. É a saída que menos muda e a que mais deixa dúvida.
 
 ## Alimentação
 
@@ -103,7 +140,7 @@ Porta USB 5 V ──┬── ESP32-C3 (conector USB-C)
 **Modo 12 V — o de campo:**
 
 ```
-Fonte 12 V ──┬── TB6612FNG (VM) ── bomba RS-385 12 V
+Fonte 12 V ──┬── driver da bomba ── bomba RS-385 12 V
              │
              └── LM2596 ─── 5 V ──┬── ESP32-C3
                                   ├── ESP32-CAM
@@ -168,7 +205,7 @@ devolve lixo com o Wi-Fi ligado**, então toda leitura analógica fica no ADC1
 | Solo (AO) | 34 | ADC1_CH6, só entrada |
 | Nível (AO) | 35 | ADC1_CH7, só entrada |
 | Anel WS2812 | 27 | |
-| Bomba PWMA / AIN1 / AIN2 / STBY | 26 / 25 / 33 / 14 | STBY com pull-down de 10 kΩ |
+| Bomba PWMA / AIN1 / AIN2 / STBY | 26 / 25 / 33 / 14 | pinagem do TB6612FNG, que era o driver da v0.1 |
 | Enlace RX / TX / RST | 16 / 17 / 19 | |
 | Botão / LED / buzzer | 0 / 2 / 13 | |
 

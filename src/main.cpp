@@ -10,7 +10,7 @@
 //  tudo em tres lugares - display, pagina web e serial.
 //
 //  ESP32 DevKit V1 | DHT22 | umidade de solo | nivel de tanque |
-//  OLED SSD1306 | anel WS2812 de 16 pixels | bomba 12 V via TB6612FNG
+//  OLED SSD1306 | anel WS2812 de 16 pixels | bomba por ponte H mini
 //
 //  Regra que vale para o arquivo inteiro: NADA BLOQUEIA. Sem delay() em
 //  regime, sem while esperando sensor. Um vaso que trava com o Wi-Fi

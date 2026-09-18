@@ -66,14 +66,33 @@
 #define ANEL_PIXELS 16
 
 // ---- Bomba: UM pino ------------------------------------------------
-//  O TB6612FNG continua sendo o driver, mas com AIN1 amarrado em 3V3,
-//  AIN2 em GND e STBY em 3V3 na propria placa: a bomba gira num sentido
-//  so, entao direcao nao precisa de fio. O ESP32-C3 controla apenas o
-//  PWMA. Com o resistor de pull-down de 10 k no PWMA, duty zero e o
-//  estado de repouso e a bomba fica parada durante todo o boot - a mesma
-//  garantia que o STBY dava, com tres pinos a menos.
-#define PIN_BOMBA_PWM    3
+//  O driver da bancada e um modulo de ponte H dupla pequeno, com header
+//  IN1..IN4 e GND, SEM pinos de enable. A bomba gira num sentido so,
+//  entao direcao nao precisa de fio: IN2 fica no GND e o ESP32-C3
+//  controla apenas o IN1, por PWM.
+//
+//      IN1  <- GPIO3, com pull-down de 10 k para GND
+//      IN2  -- GND
+//      IN3, IN4 -- livres (o segundo canal nao tem fio)
+//
+//  O PULL-DOWN E O UNICO CADEADO, e por isso ele nao e opcional. O
+//  projeto vinha de um TB6612FNG, que tinha STBY: eram dois mecanismos
+//  garantindo bomba parada durante o boot - o STBY em pull-down e o duty
+//  zero. Este modulo nao tem enable nem STBY, entao sobrou um. Sem o
+//  resistor, o pino do C3 fica em alta impedancia durante todo o boot e
+//  nao ha nada atras para segurar a bomba.
+#define PIN_BOMBA_PWM    3  // vai no IN1 do modulo
 #define BOMBA_PINO_UNICO 1
+
+// TETO DE TENSAO DO DRIVER, EM VOLTS.
+//
+// Medido no proprio modulo por Henrique: ele aceita ate 11 V. Esse numero
+// esta em conflito aberto com a bomba RS-385, que e de 12 V nominais - o
+// registro completo do conflito e das saidas esta no diario, entrada de
+// 18/09/2026. Enquanto ele nao for resolvido, NAO ligar a bomba de 12 V
+// neste driver: 12 V na saida de um chip especificado para 11 V e como o
+// projeto perde a ponte.
+#define BOMBA_DRIVER_VMAX_V 11
 
 // ---- Enlace com a ESP32-CAM -----------------------------------------
 //  UART1 pela matriz de GPIO. O console vai pelo USB nativo (GPIO18/19),
@@ -125,7 +144,19 @@
 #define PIN_BUZZER    13
 #endif
 
-#define BOMBA_PWM_FREQ   20000  // 20 kHz: acima do audivel, a bomba nao "canta"
+// FREQUENCIA DE PWM: 1 kHz, e nao os 20 kHz que estavam aqui.
+//
+// Os 20 kHz vinham do TB6612FNG, que e MOSFET e chaveia rapido - a
+// escolha era ficar acima do audivel para a bomba nao "cantar". O driver
+// real do projeto e um L298N mini, que e Darlington bipolar: a saida
+// leva microssegundos para comutar, e a 20 kHz a ponte passa boa parte
+// do tempo na regiao linear, onde ela nao chaveia - ela aquece.
+//
+// Na pratica o ruido nao volta: a bomba so e acionada em duty 100%,
+// onde nao ha chaveamento nenhum. A frequencia so passa a importar no
+// dia em que existir controle de vazao - e ai 1 kHz e o teto deste chip,
+// nao uma preferencia.
+#define BOMBA_PWM_FREQ   1000
 #define BOMBA_PWM_BITS   10
 #define BOMBA_PWM_MAX    1023
 #define BOMBA_CANAL_LEDC 0
