@@ -59,6 +59,7 @@ pio run                        # compila o vaso e a câmera
 pio run -e c3        -t upload # grava o vaso (USB nativo)
 pio run -e cam       -t upload # grava a câmera (adaptador USB-TTL, GPIO0 no GND)
 pio run -e autoteste -t upload # treina e mede, sem nada ligado na placa
+pio run -e ensaio    -t upload # le so o DHT22 e o nivel, sem mais nada
 pio run -e bancada   -t upload # o vaso com log detalhado, para calibrar
 pio device monitor -e c3
 ```
@@ -68,6 +69,7 @@ pio device monitor -e c3
 | `c3` | ESP32-C3 | o vaso |
 | `cam` | ESP32-CAM | a câmera |
 | `autoteste` | ESP32-C3 | exercita o enlace e treina o classificador na placa |
+| `ensaio` | ESP32-C3 | bring-up de sensor, um subsistema por vez |
 | `bancada` | ESP32-C3 | o vaso com log detalhado |
 | `esp32dev` | DevKit V1 | a placa da v0.1, mantida compilando |
 
