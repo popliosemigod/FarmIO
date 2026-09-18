@@ -92,37 +92,51 @@ não gira. É esse o estado que o pull-down garante durante todo o boot.
 O `config.h` cobre os dois arranjos: `BOMBA_PINO_UNICO` está definido só na
 pinagem do C3.
 
-### Conflito aberto: 11 V de driver para uma bomba de 12 V
+### A bomba roda em 7 a 9 V, não em 12
 
-O módulo aceita **até 11 V** na alimentação de potência. A RS-385 é de **12 V
-nominais**. Os dois números não convivem, e isso não é margem de engenharia: é
-especificação estourada.
+O módulo aceita **até 11 V** na alimentação de potência, e a RS-385 é de **12 V
+nominais**. Por um momento os dois números não conviveram. Resolvido por decisão
+de bancada: **a bomba passa a ser alimentada em 7 a 9 V**, com folga sob o teto do
+driver.
 
-O teto de 11 V também diz que o chip não é um L298N, apesar do nome com que o
-módulo é vendido — o L298N aceita 46 V. Pelo teto, as duas candidatas prováveis
-são:
+Motor CC aceita subtensão sem drama, e é isso que torna a decisão barata — girar
+devagar não danifica nada. O que muda é a vazão:
+
+| Tensão na bomba | Rotação e vazão, aprox. |
+| --- | --- |
+| 12 V (nominal) | 100% — o número do dimensionamento original |
+| 9 V | ~75% |
+| 7 V | ~58% |
+
+**A consequência cai toda em `BOMBA_PASSO_MS`.** O pulso de 4 s foi dimensionado
+para 12 V; com menos vazão, o mesmo pulso leva menos água. O número certo só sai
+do ensaio com planta — medir quantos pulsos tiram o solo da faixa seca e ajustar.
+Até lá, o tempo de pulso é mais um chute educado, na mesma condição dos limiares.
+
+Some-se a isso a queda do próprio driver, que a bomba não vê: se o chip for
+DRV8833 (MOSFET) são uns 0,4 V a 1 A; se for da família L9110 (bipolar), mais.
+Alimentar o módulo com 9 V entrega algo entre 8 e 8,6 V na bomba.
+
+#### O que ainda falta saber: a corrente
+
+O teto de 11 V diz que o chip **não é um L298N**, apesar do nome com que o módulo
+é vendido — o L298N aceita 46 V. Pelo teto, as candidatas prováveis são:
 
 | Chip | Tensão | Corrente contínua por canal |
 | --- | --- | --- |
 | DRV8833 | 2,7–10,8 V | 1,5 A (2 A de pico) |
 | L9110S / HG7881 | 2,5–12 V | 800 mA |
 
-A diferença entre as duas decide se o driver serve para alguma bomba: a corrente
-de partida de um motor CC é a corrente de rotor travado, que na RS-385 passa de
-2 A por algumas dezenas de milissegundos. **Ler a marcação do chip é o que fecha
-essa conta**, e é o próximo passo de bancada.
+A corrente de partida de um motor CC é a de rotor travado, e ela **escala com a
+tensão**: a RS-385 passa de 2 A em 12 V, o que dá cerca de 1,5 A em 9 V e 1,2 A em
+7 V, por algumas dezenas de milissegundos. Rodar em 7–9 V já derrubou o problema
+de "certamente demais" para "depende do chip" — um DRV8833 aguenta, um L9110S
+fica no limite.
 
-As três saídas, em ordem de preferência:
-
-1. **Bomba de diafragma de 5 V (~350 mA).** Resolve os dois problemas de uma vez —
-   cabe no teto de tensão do driver, cabe na corrente dele, e é exatamente a bomba
-   que o [orçamento de energia](06-energia-usb.md) já apontava como a única que
-   irriga alimentada por USB.
-2. **MOSFET avulso no lugar da ponte.** Um IRLZ44N com diodo de roda livre aciona
-   a RS-385 de 12 V com um pino, sem teto de tensão atrapalhando. Direção fixa não
-   precisa de ponte H nenhuma — a ponte sempre foi peça a mais neste projeto.
-3. **Alimentar o módulo em 11 V.** Funciona, com menos vazão, e só se a corrente
-   do chip aguentar a partida. É a saída que menos muda e a que mais deixa dúvida.
+**Ler a marcação impressa no chip é o que fecha a conta**, e continua sendo passo
+de bancada. Se for L9110S, a saída mais limpa é trocar a bomba por uma de
+diafragma de 5 V (~350 mA), que é a mesma que o [orçamento de
+energia](06-energia-usb.md) aponta como a única que irriga alimentada por USB.
 
 ## Alimentação
 

@@ -120,16 +120,24 @@ firmware aciona mas que ninguém conferiu na bancada é exatamente o tipo de nú
 que o diário existe para marcar como não verificado, e ele passou seis commits sem
 essa marca.
 
-**Decisão:** não ligar a bomba de 12 V neste driver enquanto o conflito estiver
-aberto. `BOMBA_DRIVER_VMAX_V` entrou no `config.h` com o valor 11, apontando para
-esta entrada.
+**Decisão, tomada na mesma conversa:** a bomba passa a ser alimentada em **7 a
+9 V**, com folga sob o teto do driver. Motor CC aceita subtensão sem drama — girar
+devagar não danifica nada —, então o conflito se resolve sem trocar peça. O que
+muda é a vazão: cerca de 75% da nominal em 9 V, pouco mais da metade em 7 V.
+
+`BOMBA_DRIVER_VMAX_V` (11) e `BOMBA_TENSAO_V` (9) entraram no `config.h`.
+
+**Dívida que essa decisão cria:** `BOMBA_PASSO_MS` vale 4 s porque foi dimensionado
+para 12 V. Com menos vazão, o mesmo pulso leva menos água ao vaso, e o tempo certo
+só sai do ensaio com planta. O parâmetro desce de "dimensionado" para "chute
+educado", na mesma condição dos limiares de solo — e isso precisa estar escrito,
+porque um número que já foi calculado não anuncia sozinho que deixou de valer.
 
 **Próximo passo, e é de bancada:** ler a marcação impressa no chip do módulo. É ela
-que decide entre 800 mA e 1,5 A — e a corrente de partida da RS-385, que é a de
-rotor travado, passa de 2 A por algumas dezenas de milissegundos. As três saídas
-estão em `docs/02-hardware-e-pinagem.md`; a preferida é a bomba de diafragma de
-5 V, que resolve tensão e corrente de uma vez e é a mesma que o orçamento de
-energia já apontava como a única que irriga em USB.
+que decide entre 800 mA e 1,5 A. A decisão de 7–9 V ajuda também aqui, porque a
+corrente de rotor travado escala com a tensão: os mais de 2 A da RS-385 em 12 V
+viram ~1,5 A em 9 V e ~1,2 A em 7 V. O problema saiu de "certamente demais" para
+"depende do chip" — um DRV8833 aguenta, um L9110S fica no limite.
 
 ---
 
