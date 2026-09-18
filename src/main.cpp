@@ -26,6 +26,7 @@
 #include "energia.h"
 #include "sensores.h"
 #include "camera.h"
+#include "telemetria.h"
 #include "bomba.h"
 #include "anel.h"
 #include "tela.h"
@@ -118,20 +119,6 @@ inline void tick() {
 }  // namespace Rede
 
 // ---------------------------------------------------------------------
-//  Telemetria pela serial - o canal que funciona sem rede nenhuma
-// ---------------------------------------------------------------------
-static void heartbeatSerial() {
-  static uint32_t proximo = 0;
-  const uint32_t agora    = millis();
-  if ((int32_t)(agora - proximo) < 0) return;
-  proximo = agora + INTERVALO_SERIAL_MS;
-
-  char json[1100];
-  Web::jsonSensores(json, sizeof(json));
-  Serial.println(json);
-}
-
-// ---------------------------------------------------------------------
 void setup() {
   Serial.begin(115200);
   delay(300);  // unica espera do firmware: janela para o monitor engatar
@@ -171,6 +158,7 @@ void setup() {
   Web::begin();
 
   bootAte = millis() + 3000;  // 3 s de animacao verde antes de operar
+  Telemetria::begin();
   Serial.println("[boot] pronto");
 }
 
@@ -199,5 +187,5 @@ void loop() {
   // diagnostico que sobra quando nem display nem rede respondem.
   if (PIN_LED_PLACA >= 0) digitalWrite(PIN_LED_PLACA, B.ligada ? HIGH : LOW);
 
-  heartbeatSerial();
+  Telemetria::tick();
 }

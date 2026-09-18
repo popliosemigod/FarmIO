@@ -84,26 +84,6 @@
 #define PIN_BOMBA_PWM    3  // vai no IN1 do modulo
 #define BOMBA_PINO_UNICO 1
 
-// TENSAO DA BOMBA, EM VOLTS.
-//
-// O driver aceita ate 11 V. A bomba RS-385 e de 12 V nominais, e por um
-// momento os dois numeros nao conviveram - o registro esta no diario,
-// entrada de 18/09/2026. Resolvido por decisao de bancada: a bomba passa
-// a ser alimentada em 7 a 9 V, abaixo do teto do driver.
-//
-// MOTOR CC ACEITA SUBTENSAO SEM DRAMA, e isso e o que torna a decisao
-// barata: girar devagar nao danifica nada. O que muda e a vazao, que cai
-// junto com a rotacao - em 9 V a bomba entrega cerca de tres quartos do
-// que entregaria em 12 V, e em 7 V pouco mais da metade.
-//
-// A CONSEQUENCIA CAI TODA EM BOMBA_PASSO_MS. O pulso de 4 s foi
-// dimensionado para 12 V; com menos vazao, o mesmo pulso leva menos agua
-// ao vaso, e o numero certo so sai do ensaio com a planta - medir quantos
-// pulsos tiram o solo da faixa seca e ajustar. Ate la, este e mais um
-// numero de chute educado, como os limiares.
-#define BOMBA_DRIVER_VMAX_V 11  // teto do modulo - nao passar disso
-#define BOMBA_TENSAO_V      9   // alvo de operacao (faixa util: 7 a 9)
-
 // ---- Enlace com a ESP32-CAM -----------------------------------------
 //  UART1 pela matriz de GPIO. O console vai pelo USB nativo (GPIO18/19),
 //  entao estes dois pinos ficam so para a camera e o log do vaso nunca
@@ -166,7 +146,27 @@
 // onde nao ha chaveamento nenhum. A frequencia so passa a importar no
 // dia em que existir controle de vazao - e ai 1 kHz e o teto deste chip,
 // nao uma preferencia.
-#define BOMBA_PWM_FREQ   1000
+#define BOMBA_PWM_FREQ      1000
+// TENSAO DA BOMBA, EM VOLTS.
+//
+// O driver aceita ate 11 V. A bomba RS-385 e de 12 V nominais, e por um
+// momento os dois numeros nao conviveram - o registro esta no diario,
+// entrada de 18/09/2026. Resolvido por decisao de bancada: a bomba passa
+// a ser alimentada em 7 a 9 V, abaixo do teto do driver.
+//
+// MOTOR CC ACEITA SUBTENSAO SEM DRAMA, e isso e o que torna a decisao
+// barata: girar devagar nao danifica nada. O que muda e a vazao, que cai
+// junto com a rotacao - em 9 V a bomba entrega cerca de tres quartos do
+// que entregaria em 12 V, e em 7 V pouco mais da metade.
+//
+// A CONSEQUENCIA CAI TODA EM BOMBA_PASSO_MS. O pulso de 4 s foi
+// dimensionado para 12 V; com menos vazao, o mesmo pulso leva menos agua
+// ao vaso, e o numero certo so sai do ensaio com a planta - medir quantos
+// pulsos tiram o solo da faixa seca e ajustar. Ate la, este e mais um
+// numero de chute educado, como os limiares.
+#define BOMBA_DRIVER_VMAX_V 11  // teto do modulo - nao passar disso
+#define BOMBA_TENSAO_V      9   // alvo de operacao (faixa util: 7 a 9)
+
 #define BOMBA_PWM_BITS   10
 #define BOMBA_PWM_MAX    1023
 #define BOMBA_CANAL_LEDC 0
