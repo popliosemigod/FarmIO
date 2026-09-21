@@ -4,12 +4,14 @@
 avisa o que está errado e mostra tudo em três lugares: no display, na página web e
 na serial.
 
-> **Estado: as duas placas estão gravadas e rodam separadas.** O vaso lê os
-> sensores na bancada; a câmera tira foto e classifica. O que ainda não foi
-> ensaiado: o enlace por fio entre as duas, a bomba girando, e o classificador com
-> planta — que **ainda não é calibrado** e já deu um falso positivo com foto real
-> ([docs/05](docs/05-visao-planta.md#o-primeiro-teste-real-um-falso-positivo)). Os limiares dos sensores são ponto de partida, não
-> medida — ver [calibração](docs/02-hardware-e-pinagem.md#calibração--leia-antes-de-confiar-em-qualquer-leitura).
+> **Estado: as duas placas estão gravadas e ligadas pelo fio.** A foto sai da câmera
+> até o vaso com retransmissão (58 de 58 em fio real). O que ainda não foi
+> ensaiado: a bomba girando, e o botão de foto **no celular**. O classificador com
+> planta **ainda não é calibrado** e já deu falso positivo com foto real
+> ([docs/05](docs/05-visao-planta.md#o-primeiro-teste-real-um-falso-positivo)). A
+> umidade do solo está **parcialmente calibrada**: só o ponto seco é medido; o
+> molhado é chute
+> ([calibração](docs/02-hardware-e-pinagem.md#calibração--leia-antes-de-confiar-em-qualquer-leitura)).
 
 Este é um projeto do laboratório [**Jaspy**](https://github.com/popliosemigod/Jaspy),
 que guarda o método, as ferramentas e a documentação comum. Cada projeto tem
@@ -167,14 +169,18 @@ FarmIO/
 
 ## Próximos passos
 
-1. **Ligar os três fios do enlace**: D0 da XIAO no GPIO20 do C3, D1 no GPIO21, e o
-   GND comum. As duas placas já estão gravadas; o fio é o que falta para a foto
-   chegar no app.
+1. **Apertar o botão de foto no celular**, pelo roteador dele. O caminho HTTP foi
+   ensaiado com roteador emulado e o fio com a serial; o celular de verdade é o que
+   falta. Se algo não responder, o comando `w` do console do vaso testa o fio e o
+   painel mostra o que chega em cada ponta.
 2. **Calibrar a visão com fotos reais.** A primeira foto real já deu falso
    positivo. Com planta na bancada: fotos com e sem planta pelo comando `F` da
    câmera, e o retreino em cima delas.
-3. **Calibrar solo e tanque** com o ambiente `bancada`, na placa nova — os
-   limiares vieram da DevKit V1 e o ADC do C3 tem outra curva.
+3. **Completar a calibração do solo: molhar a terra** até encharcar e medir com
+   `scripts/calibra_solo.py` (espera a leitura estabilizar). O ponto seco já está
+   medido, mas ainda assentando (a leitura seca desceu 50 pontos em 20 min):
+   refazer depois de algumas horas. O molhado, e portanto as faixas do meio,
+   ainda são chute. O tanque também espera água.
 4. **Medir a corrente com amperímetro** e comparar com o `energia_ma` publicado no
    JSON.
 5. **Ensaio de irrigação** com o tanque com água e a bomba na fonte de 7–9 V —

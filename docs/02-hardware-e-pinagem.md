@@ -210,19 +210,44 @@ Os limiares em [`include/config.h`](../include/config.h) são **ponto de partida
 não medida**:
 
 ```c
-#define SOLO_SECO_ADC        2800
-#define SOLO_BAIXO_ADC       2400
-#define SOLO_ALTO_ADC        1600
-#define SOLO_ENCHARCADO_ADC  1200
-#define NIVEL_VAZIO_ADC       300
-#define NIVEL_CHEIO_ADC      2600
+#define SOLO_SECO_ADC        1650   // medido em 21/09/2026 (leitura seca: 1734)
+#define SOLO_BAIXO_ADC       1538   // derivado
+#define SOLO_ALTO_ADC        1312   // derivado
+#define SOLO_ENCHARCADO_ADC  1200   // CHUTE: a terra nunca foi molhada
+#define NIVEL_VAZIO_ADC       300   // chute
+#define NIVEL_CHEIO_ADC      2600   // chute
 ```
+
+**Estado da calibração do solo: parcial.** O ponto seco foi medido em 21/09/2026,
+com terra de vaso recém-comprada e nunca molhada. Falta o molhado. Enquanto ele não
+existir, `BAIXO` e `ALTO` — que dependem dele — são derivados de um chute. O
+firmware já reconhece terra seca como seca; **o que ainda não se sabe é onde ela
+deixa de ser seca.**
+
+**O sensor assenta.** Nos primeiros minutos depois de cravado, a mesma terra seca
+leu 1249, 1494, 2053, 2258, 2453 e por fim 1738 — o sensor acomoda e, se alguém
+mexe nele, a leitura pula. Anotar o primeiro número que parece estável calibra o
+vaso com um valor que não se sustenta: o primeiro "estável" desta calibração
+(2258) foi descartado poucos minutos depois. E mesmo com o sensor parado a leitura
+seguiu descendo (1734 → 1685 em ~20 min): o ponto seco ainda assenta, então a
+medida vale de novo depois de algumas horas. Por isso existe
+[`scripts/calibra_solo.py`](../scripts/calibra_solo.py), que só aceita o número
+depois de uma janela de 60 s com variação menor que 40:
+
+```powershell
+~/.platformio/penv/Scripts/python.exe scripts/calibra_solo.py                   # mede
+~/.platformio/penv/Scripts/python.exe scripts/calibra_solo.py --seco 1734 --molhado 950
+```
+
+A segunda forma, com os dois pontos, imprime os quatro limiares no `config.h`.
 
 Sensor capacitivo varia entre lotes, e o valor depende do substrato, da
 profundidade de inserção e da tensão de alimentação. O procedimento:
 
 1. gravar o ambiente `bancada` (`pio run -e bancada -t upload`);
-2. ler o `solo_adc` pela serial com o sensor **no ar** → é o teto do seco;
+2. medir com `scripts/calibra_solo.py` o sensor na terra **seca** → é o teto do seco;
+   (o procedimento original era o sensor no ar; a terra seca é o que o vaso vai
+   de fato ver, e foi o ponto escolhido em 21/09/2026)
 3. repetir com o sensor em **terra encharcada** → é o piso do molhado;
 4. dividir a faixa em cinco e atualizar os quatro limiares;
 5. commitar com tipo `calib`, registrando o número medido no

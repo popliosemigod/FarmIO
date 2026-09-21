@@ -9,13 +9,16 @@ implementado na v0.1 — cada regra aqui tem código correspondente em
 Cinco faixas, não um limiar único. Limiar único faz a bomba oscilar em torno do
 ponto de corte; faixa dá histerese natural.
 
-| Faixa | ADC (padrão, a calibrar) | O que acontece |
+| Faixa | ADC (calibração parcial de 21/09/2026) | O que acontece |
 | --- | --- | --- |
-| Extremamente baixa | ≥ 2800 | **Irriga.** Vira risco `SOLO MUITO SECO` |
-| Baixa | 2400 – 2799 | nada |
-| Estável | 1600 – 2399 | nada |
-| Alta | 1200 – 1599 | nada |
+| Extremamente baixa | ≥ 1650 | **Irriga.** Vira risco `SOLO MUITO SECO` |
+| Baixa | 1538 – 1649 | nada |
+| Estável | 1312 – 1537 | nada |
+| Alta | 1200 – 1311 | nada |
 | Extremamente alta | < 1200 | **Bomba bloqueada.** Risco `SOLO ENCHARCADO` |
+
+Só o limite de cima (1650) é medido; o de baixo (1200) ainda é chute, e os dois do
+meio derivam dele. Detalhes em [docs/02](02-hardware-e-pinagem.md#calibração--leia-antes-de-confiar-em-qualquer-leitura).
 
 Leitura alta = solo seco: o sensor capacitivo entrega mais tensão quando há menos
 água em volta.
