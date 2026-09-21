@@ -426,10 +426,27 @@
 
 // Solo: sensor capacitivo alimentado em 3V3. Leitura ALTA = seco.
 // Alimentar em 5 V colocaria ate 5 V no ADC de 3,3 V e mataria o pino.
-#define SOLO_SECO_ADC       2800  // acima disso: extremamente baixa (irriga)
-#define SOLO_BAIXO_ADC      2400
-#define SOLO_ALTO_ADC       1600
-#define SOLO_ENCHARCADO_ADC 1200  // abaixo disso: extremamente alta (bloqueia)
+//
+// CALIBRACAO PARCIAL, 21/09/2026 - terra de vaso recem-comprada, nunca
+// molhada, com o sensor cravado no substrato do vaso do projeto, no C3:
+//   SECO ......... MEDIDO: 1734 estavel (1729-1739 em 60 s, scripts/
+//                  calibra_solo.py). O limiar fica ~5% abaixo, para o ruido
+//                  e a acomodacao da terra nao trocarem a faixa.
+//   ENCHARCADO ... CHUTE, ainda. Nunca se molhou esta terra. E o numero que
+//                  falta: com ele, BAIXO e ALTO sao 25% e 75% da faixa, a
+//                  mesma regra dos valores de partida (2800/2400/1600/1200).
+// ATENCAO: nos primeiros minutos depois de cravar, a mesma terra seca leu
+// 1249, 2258 e 2453 - o sensor assenta, e sobe ou desce se alguem mexe nele.
+// So vale o numero medido com ele parado. Se o sensor mudar de posicao,
+// medir de novo antes de confiar nestes limiares. E mesmo parado a leitura
+// seguiu descendo (1734 -> 1685 em ~20 min): o ponto seco ainda assenta, e
+// o limiar de 1650 esta perto dele. Refazer depois de algumas horas.
+// Quando a terra for molhada ate encharcar: medir com a ferramenta, trocar o
+// ENCHARCADO e refazer BAIXO e ALTO (docs/02, secao Calibracao).
+#define SOLO_SECO_ADC       1650  // MEDIDO: acima disso: extremamente baixa (irriga)
+#define SOLO_BAIXO_ADC      1538  // derivado: SECO - 25% da faixa
+#define SOLO_ALTO_ADC       1312  // derivado: SECO - 75% da faixa
+#define SOLO_ENCHARCADO_ADC 1200  // CHUTE: abaixo disso: extremamente alta (bloqueia)
 
 // Nivel do tanque: sensor resistivo tipo pente (Funduino). Leitura ALTA
 // = mais agua tocando as trilhas.
