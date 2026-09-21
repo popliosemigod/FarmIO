@@ -13,6 +13,22 @@ projeto. O código que o aplica é [`include/energia.h`](../include/energia.h).
 > propósito para o lado conservador: errar para menos apaga LED, errar para mais
 > reinicia a placa.
 
+> **Atualização de 21/09/2026: a bomba saiu da porta USB.** Por decisão de
+> bancada, a RS-385 passou a ter fonte própria de 7 a 9 V
+> (`BOMBA_FONTE_SEPARADA`). A USB continua alimentando só a lógica — C3, câmera,
+> tela, sensores, anel —, e o orçamento abaixo continua valendo para ela. O que
+> muda: a bomba deixa de ser bloqueada por energia, deixa de descontar do brilho
+> do anel, e a câmera pode capturar com a bomba girando.
+>
+> A fonte separada exige **terra comum** entre a fonte da bomba, o driver e o C3.
+> O `IN1` do driver é referenciado ao GND do C3; sem o terra comum o nível lógico
+> flutua e a bomba liga sozinha.
+>
+> A câmera também perdeu o rádio na mesma data — a foto passou a vir pelo fio.
+> Os 180 mA dela na tabela eram "capturando QVGA com Wi-Fi"; sem Wi-Fi o número
+> real deve ser menor. Fica como está até o amperímetro dizer quanto: errar para
+> mais apaga LED, errar para menos reinicia a placa.
+
 ## O que cabe
 
 Porta USB 2.0 entrega 500 mA sem negociação nenhuma. O consumo médio do conjunto:

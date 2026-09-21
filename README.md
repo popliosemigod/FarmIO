@@ -4,9 +4,9 @@
 avisa o que está errado e mostra tudo em três lugares: no display, na página web e
 na serial.
 
-> **Estado: compila, está dimensionado, e o firmware do vaso já rodou numa placa
-> real.** O que ainda não existe é ensaio com sensor, com bomba e com a câmera
-> apontada para alguma coisa. Os limiares dos sensores são ponto de partida, não
+> **Estado: o firmware do vaso roda numa placa real, com DHT22, solo e nível
+> ligados e respondendo.** O que ainda não existe é ensaio com a bomba girando e
+> com a câmera gravada com o firmware do projeto. Os limiares dos sensores são ponto de partida, não
 > medida — ver [calibração](docs/02-hardware-e-pinagem.md#calibração--leia-antes-de-confiar-em-qualquer-leitura).
 
 Este é um projeto do laboratório [**Jaspy**](https://github.com/popliosemigod/Jaspy),
@@ -25,8 +25,11 @@ repositório próprio; este é o do FarmIO.
 - **conhece o próprio orçamento de corrente** e ajusta o brilho do anel ao que a
   porta USB aguenta, em vez de descobrir o limite reiniciando;
 - alerta em três canais: tela, anel de LED e página web;
-- transmite vídeo ao vivo, embutido na mesma página — e acha o endereço da câmera
-  sozinho.
+- **tira uma foto quando o app pede** — pelo fio, sem a câmera precisar de rede;
+- **liga e desliga a bomba por um botão no app**, sem mexer na lógica automática e
+  sem passar por cima da proteção contra bomba a seco;
+- **funciona em campo aberto só com um celular**: tem rede própria sempre no ar, e
+  entra no roteador do celular quando ele estiver ligado.
 
 ## Duas placas
 
@@ -36,9 +39,9 @@ repositório próprio; este é o do FarmIO.
 | O olho | **ESP32-CAM** AI-Thinker | captura, classificação, vídeo |
 
 Elas conversam por **UART**, não por Wi-Fi — as razões estão em
-[04-enlace-c3-cam.md](docs/04-enlace-c3-cam.md). Pelo fio passam doze bytes: o
-veredito. O vídeo continua indo por rádio, que é o que fio de 115200 bps não
-aguenta.
+[04-enlace-c3-cam.md](docs/04-enlace-c3-cam.md). Pelo fio passam o veredito, a
+cada 10 s, e a foto, quando o app pede. A câmera não tem rádio ligado: o celular
+só conversa com o vaso.
 
 | Item | Componente |
 | --- | --- |
@@ -47,7 +50,7 @@ aguenta.
 | Tanque | sensor de nível tipo pente (Funduino) |
 | Tela | OLED SSD1306 128×64, I²C |
 | Luz | anel de 16 LEDs WS2812 (5050) |
-| Bomba | RS-385 12 V via ponte H dupla mini, **um pino de controle** |
+| Bomba | RS-385 em 7–9 V, fonte própria, via ponte H dupla mini — **um pino** |
 
 Pinagem completa, alimentação e as armadilhas de ADC e strapping estão em
 [`docs/02-hardware-e-pinagem.md`](docs/02-hardware-e-pinagem.md).
@@ -79,18 +82,30 @@ Credencial de Wi-Fi é opcional para compilar:
 Copy-Item include\secrets.example.h include\secrets.h   # e preencher
 ```
 
-Sem `secrets.h` o firmware compila e roda — o vaso sobe o próprio ponto de acesso
-(`farmio-01`) e espera configuração. É isso que permite o CI compilar sem nenhuma
-senha. **A detecção de planta não depende de rede nenhuma**: ela vive no fio.
+Sem `secrets.h` o firmware compila e roda — só com a rede própria. É isso que
+permite o CI compilar sem nenhuma senha. **A detecção de planta e a foto não
+dependem de rede nenhuma**: elas vivem no fio.
+
+### Em campo: como chegar no app
+
+| Caminho | Como | Endereço |
+| --- | --- | --- |
+| **rede do vaso** — sempre funciona | no celular, entrar no Wi-Fi `farmio-01` | `http://192.168.4.1` |
+| roteador do celular | ligar o roteador do celular; o vaso entra sozinho | o IP sai na serial; em alguns celulares, `http://farmio-01.local` |
+
+O roteador do celular precisa estar em **2,4 GHz** e **WPA2** — as placas não
+enxergam 5 GHz, e o erro que aparece é "rede não encontrada", não "senha errada".
 
 ## Consumo de recursos
 
-Compilação de 09/09/2026:
+Compilação de 21/09/2026:
 
 | Ambiente | RAM | Flash |
 | --- | --- | --- |
-| `c3` (vaso) | 16,8% — 54,9 kB de 320 kB | 65,0% — 852 kB de 1,31 MB |
-| `cam` (câmera) | 14,4% — 47,2 kB de 320 kB | 15,1% — 474 kB de 3,15 MB |
+| `c3` (vaso) | 17,4% — 57,0 kB de 320 kB | 68,2% — 894 kB de 1,31 MB |
+| `cam` (câmera) | 13,4% — 43,9 kB de 320 kB | 11,5% — 360 kB de 3,15 MB |
+
+A câmera encolheu 114 kB em 21/09: é a pilha de Wi-Fi que saiu junto com o vídeo.
 
 ## Estrutura
 
@@ -105,7 +120,8 @@ FarmIO/
 │   ├── energia.h       orçamento de corrente e teto de brilho
 │   ├── anel.h          anel WS2812, animações não bloqueantes
 │   ├── tela.h          OLED, tela inicial e tela de risco
-│   ├── web.h           servidor HTTP, JSON e vídeo
+│   ├── web.h           o app: página, JSON, foto e botão da bomba
+│   ├── telemetria.h    o painel legível da serial, e os comandos de bancada
 │   └── cenas.h         gerador de cenas sintéticas (só no autoteste)
 ├── lib/
 │   ├── farmio_enlace/  protocolo de quadros — C++11 puro, os dois lados do fio
@@ -138,8 +154,9 @@ FarmIO/
 
 ## Próximos passos
 
-1. **Ligar os quatro fios do enlace** e gravar a ESP32-CAM. É o que transforma "o
-   protocolo passa em 152 de 152 ensaios de bit" em "o enlace funciona".
+1. **Gravar a ESP32-CAM.** Ela precisa de um adaptador USB-serial no header de
+   gravação — não tem USB próprio. É o que destrava o enlace, o veredito e a foto
+   de uma vez.
 2. **Apontar a câmera para uma planta de verdade** e para um objeto verde de
    plástico. É esse número que diz se os pesos treinados valem alguma coisa fora
    do gerador de cenas.
@@ -147,7 +164,8 @@ FarmIO/
    limiares vieram da DevKit V1 e o ADC do C3 tem outra curva.
 4. **Medir a corrente com amperímetro** e comparar com o `energia_ma` publicado no
    JSON.
-5. **Ensaio de irrigação** com planta real, com fonte de 12 V ou bomba de 5 V.
+5. **Ensaio de irrigação** com o tanque com água e a bomba na fonte de 7–9 V —
+   primeiro pelo botão do app, depois pelo automático.
 6. **Acoplamento entre vasos**, que dá nome ao projeto. Nenhum protocolo definido
    ainda — mas o quadro do enlace já é o candidato natural.
 

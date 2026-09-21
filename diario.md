@@ -76,6 +76,110 @@ real, o vaso irriga na hora errada — o firmware está correto, os números nã
 
 ---
 
+### 2026-09-21 — Foto pelo fio, botão da bomba, e o defeito que o bloqueio escondia
+
+**Alvo:** quatro pedidos de uma vez. (1) Trocar o vídeo da câmera por uma foto sob
+demanda. (2) Um botão no app que liga e desliga a bomba, sem influenciar a lógica
+do vaso. (3) Preparar o projeto para campo aberto, onde a única rede é o roteador
+de um celular (Galaxy A14). (4) Gravar as duas placas, que estariam ligadas ao PC.
+
+**O que a bancada mostrou antes de qualquer código:** só o C3 enumerou. O
+Gerenciador de Dispositivos não tinha adaptador USB-serial nenhum — nem CH340, nem
+CP2102, nem FTDI, nem um sem driver. A ESP32-CAM não tem USB próprio; sem
+adaptador no header de gravação, ela não é gravável deste PC. **O item 4 ficou
+pela metade: o C3 foi gravado, a câmera não.**
+
+**O defeito achado no caminho, e é o registro mais importante da entrada.** Para o
+botão da bomba funcionar, o bloqueio de energia tinha de sair — a bomba agora tem
+fonte própria de 7–9 V e a USB não paga mais a corrente dela. Antes de tirar,
+conferi o que mais segurava a bomba. Nada segurava:
+
+| Sensor solto, pino em 4095 | O firmware entendia | Efeito na bomba |
+| --- | --- | --- |
+| solo | "extremamente seco" | **pede irrigação** |
+| nível | "100% cheio" | **libera a bomba** |
+
+Os dois erros apontavam para o mesmo lado: bomba pulsando a seco a cada 24 s, por
+causa de um fio. Desde 09/09 quem impedia isso era o bloqueio de energia — e só por
+acaso, porque ele existia por outro motivo. Tirá-lo sem olhar teria exposto o
+defeito no mesmo commit que entregava o botão.
+
+**Correção:** leitura fora da faixa fisicamente possível não é leitura. O
+capacitivo em 3V3 vive entre ADC ~1500 e ~3700; encostar em qualquer trilho é
+sensor solto → `SOLO_INVALIDO`, que bloqueia. No nível, só o teto invalida —
+encostar no chão é tanque vazio de verdade, e já bloqueia pelo outro lado. O limite
+da regra está escrito em `docs/02`: ela pega pino encostado num trilho, que é o
+que a bancada mostrou hoje; não pega pino flutuando no meio da faixa, que é o que
+ela mostrou em 09/09.
+
+**O que foi feito:**
+
+- **Foto pelo fio (protocolo v2).** A câmera perdeu o Wi-Fi. O app pede ao vaso, o
+  vaso pede pela UART, a câmera devolve o JPEG em pedaços de 196 bytes com
+  deslocamento em cada um e CRC da imagem inteira no fim. Carga máxima do quadro
+  subiu de 64 para 200 bytes; versão do protocolo de 1 para 2. VGA com escala 1/4
+  no decodificador dá exatamente os 160×120 do classificador — um tamanho de quadro
+  para os dois usos. De passagem, corrigido um defeito latente no ramo sem PSRAM
+  (QQVGA com escala 1/2 lia 80×60 como se fosse 160×120).
+- **Botão da bomba.** Camada manual separada do automático: contadores próprios,
+  que o automático nunca lê; automático suspenso enquanto o app manda. O botão é
+  um pedido com prazo — a página renova a cada 2 s, e sem renovação a bomba
+  desliga em 6 s; teto de 30 s por acionamento. Os intertravamentos de hardware
+  (energia, tanque vazio, tanque sem leitura) valem para o botão; os da planta
+  (solo encharcado, solo sem leitura, teto do ciclo) valem só no automático.
+- **Rede de campo.** Rede própria `farmio-01` sempre no ar em 192.168.4.1, mais o
+  roteador do celular quando ele estiver ligado. Enquanto alguém usa a rede
+  própria, o vaso não sai do canal para procurar o roteador. Credencial do
+  roteador no `secrets.h`, que continua fora do repositório.
+- **Senha da rede própria trocada.** A antiga, `farmio123`, está publicada no
+  `secrets.example.h` de um repositório público — e desde hoje a rede dá acesso a
+  um botão que liga a bomba. A nova vive só no `secrets.h`.
+
+**Previsão × medido:**
+
+| | Previsto | Medido | |
+| --- | --- | --- | --- |
+| Quadro de 207 B, varredura de bit único | 100% recusados | **1656/1656** | ✅ |
+| Foto sintética de 5000 B remontada | byte a byte | **26 pedaços, CRC confere** | ✅ |
+| Pedaço perdido | detectado | **detectado, não remendado** | ✅ |
+| Flash da câmera sem Wi-Fi | cair | **474 → 360 kB (−114 kB)** | ✅ |
+| Flash do vaso | ~68% | **68,2%** (894 kB) | ✅ |
+| Compila sem `secrets.h` | sim | **sim** (`c3` e `cam`) | ✅ |
+| Solo no ar, capacitivo em 3V3 | ADC 2900–3100 | **2900–2923** | ✅ se estava no ar |
+
+**Primeiras leituras reais do projeto.** Com o C3 gravado, os sensores estavam
+ligados e responderam: **DHT22 em 26,5 °C e 68,4% de umidade, zero falhas**; solo
+em ADC ~2910; nível em ADC 32 → tanque vazio. A última linha da tabela acima é a
+previsão anotada neste diário em 02/09, antes de qualquer sensor existir — e ela
+bateu, **se** o sensor estava fora da terra. Não sei se estava. Fica registrado
+como coincidência promissora, não como calibração.
+
+**Os comandos de bancada responderam pelo motivo certo:**
+
+- `f` → `foto recusada: camera sem enlace` — a câmera não roda o firmware do projeto;
+- `+` → `bomba recusada: tanque vazio` — o botão não passa por cima da proteção
+  contra bomba a seco, com leitura real de sensor.
+
+**O que NÃO foi verificado, e precisa ficar claro:**
+
+1. **Nenhuma rota HTTP nova foi exercitada.** O PC está em outra rede, e conectá-lo
+   à `farmio-01` derrubaria a conexão dele. As serial `f` e `+` passam pelas mesmas
+   funções do app (`Camera::pedeFoto`, `Bomba::ligaManual`), então o núcleo está
+   verificado — a página, o JavaScript e as rotas, não.
+2. **Nenhuma foto real foi tirada.** A câmera não foi gravada.
+3. **A bomba não girou.** Todo acionamento foi recusado pelo tanque vazio, que é o
+   comportamento correto e o único que deu para ver.
+
+**Decisão que precisa de validação em campo:** como o automático não enxerga o
+manual, ele pode disparar um pulso logo depois de uma rega pelo app, se o sensor
+ainda não sentiu a água. Não está tratado porque o pedido foi, explicitamente, não
+mexer na lógica. Registrado em `docs/03` com a linha que resolveria.
+
+**Evidência:** saída serial do `autoteste` (seções 1 e 1b) e do `c3`, gravados na
+COM10; `pio run` nos seis ambientes, com e sem `secrets.h`.
+
+---
+
 ### 2026-09-18 — O driver da bomba não é o que estava escrito
 
 **Alvo:** documentar a pinagem da ponte H. Virou outra coisa no meio.

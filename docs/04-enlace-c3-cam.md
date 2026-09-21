@@ -6,7 +6,7 @@ Como as duas placas do vaso conversam, e por que dessa forma e não de outra.
 
 O FarmIO tem duas placas. O **ESP32-C3** é o vaso: lê sensores, decide sobre a
 bomba, desenha a tela e hospeda a página. A **ESP32-CAM** é o olho: captura,
-classifica e transmite vídeo. Elas precisam de um canal por onde o vaso pergunte
+classifica e, quando o app pede, tira uma foto. Elas precisam de um canal por onde o vaso pergunte
 "tem planta na frente?" e a câmera responda.
 
 As duas têm rádio. A tentação óbvia é fazer a pergunta por HTTP. Não é o que o
@@ -22,8 +22,26 @@ projeto faz, por três razões concretas:
    sempre o mesmo número, e número estável é o que permite fechar um *timeout*
    honesto em vez de um chute generoso.
 
-O vídeo continua indo por Wi-Fi. Isso é streaming, e streaming é exatamente o que
-115200 bps não aguenta. Pelo fio passa só o veredito: doze bytes.
+## Desde a versão 2, a foto também passa pelo fio
+
+Até a v0.2 a câmera servia vídeo MJPEG por Wi-Fi, direto para o navegador. Em
+21/09/2026 isso saiu, porque o projeto vai para campo aberto e lá **a única rede é
+o roteador do celular**:
+
+- cada placa a mais na rede é mais uma que precisa achar o roteador, pegar IP e
+  sobreviver às quedas dele — e o celular teria de alcançar as duas;
+- vídeo contínuo mantém sensor e rádio acesos o tempo todo, num projeto que vive
+  numa porta USB;
+- ninguém assiste a um vaso. O que se quer é **uma foto na hora de conferir** —
+  e uma foto cabe no fio.
+
+Então a câmera perdeu o rádio. O celular conversa só com o vaso; o vaso pede a
+foto pela UART e a serve pela própria página. A câmera também deixou de precisar
+de credencial nenhuma.
+
+O preço é tempo: 115200 bps entregam ~11 kB/s, e uma VGA em JPEG na qualidade 14
+tem de 20 a 30 kB. **De 2 a 3 s por foto** — aceitável para um botão, inviável
+para vídeo, e vídeo deixou de existir.
 
 ## Ligação física
 
@@ -73,17 +91,42 @@ reencontrar o preâmbulo, e o quadro corrompido morre no CRC.
 | `0x02` PONG | cam → vaso | versão, uptime, resolução, PSRAM (12 B) |
 | `0x10` PEDE_VEREDITO | vaso → cam | — |
 | `0x11` VEREDITO | cam → vaso | probabilidade, cobertura, ExG, região, clusters, ms, classe, flags (12 B) |
-| `0x20` ANUNCIA_IP | cam → vaso | IP em ASCII |
+| `0x20` | — | *reservado: era ANUNCIA_IP na v1; não reaproveitar* |
 | `0x30` CONFIG | vaso → cam | piso de ExG, % de bloco, dois limiares (6 B) |
+| `0x40` PEDE_FOTO | vaso → cam | — |
+| `0x41` FOTO_INICIO | cam → vaso | tamanho u32, largura u16, altura u16, ms de captura u16 (10 B) |
+| `0x42` FOTO_PEDACO | cam → vaso | deslocamento u32 + até 196 bytes do JPEG |
+| `0x43` FOTO_FIM | cam → vaso | tamanho u32 + CRC16 do JPEG inteiro (6 B) |
+| `0x44` FOTO_ERRO | cam → vaso | código: 1 sem sensor, 2 captura falhou, 3 formato |
 | `0x7F` LOG | cam → vaso | texto livre |
+
+**Versão 2, carga máxima de 200 bytes.** Com os 64 da v1, cada quadro de foto
+levaria 60 bytes de imagem e 11 de moldura — 18% de desperdício. Com 200, são 196
+e 11, menos de 6%. Placas com versões diferentes se recusam mutuamente em vez de
+se entenderem pela metade: vereditos passando e fotos falhando seria o pior
+diagnóstico possível.
+
+**Deslocamento em cada pedaço.** Cada quadro já tem CRC próprio, então um pedaço
+corrompido morre sozinho no receptor. Sem o deslocamento, o vaso juntaria os que
+sobraram numa imagem mais curta, sem aviso. Com ele, o buraco aparece na hora e a
+foto falha com o motivo escrito — melhor que uma imagem quebrada silenciosamente.
+
+**CRC da imagem inteira no fim.** Cobre o que o CRC por quadro não cobre: a
+chance de 1 em 65 mil de um quadro corrompido passar no CRC16 dele. Numa foto de
+150 quadros, essa chance deixa de ser desprezível; no JPEG inteiro, volta a ser.
+
+**Quadro velho descartado.** Com dois buffers, o driver da câmera entrega o último
+quadro *completo*, que pode ter sido capturado antes de alguém mexer na cena. A
+câmera descarta um antes de capturar — custa ~70 ms e garante que a foto é do
+instante do pedido.
+
+**Fila de 4 kB no vaso.** Durante a foto os bytes chegam a ~11 kB/s, e a fila de
+recepção padrão (256 B) enche em 22 ms — menos que um redesenho do OLED. A fila
+de 4 kB dá ~350 ms para o loop do vaso se atrasar sem perder nada.
 
 **Mestre único.** Só o vaso pergunta. Isso elimina colisão sem precisar de
 arbitragem nenhuma, e é o que permite ao vaso saber que uma resposta que não veio
 é uma falha, e não um silêncio normal.
-
-**`ANUNCIA_IP` resolve um incômodo real da v0.1:** era preciso digitar
-`/cam?ip=192.168.0.55` na mão toda vez que o DHCP trocasse o endereço da câmera.
-Agora a câmera anuncia o próprio IP a cada ping e a página acha o vídeo sozinha.
 
 **`CONFIG` garante uma fonte só da verdade.** Os limiares vivem no `config.h` do
 vaso e são empurrados para a câmera quando o enlace sobe. Sem isso existiriam dois
@@ -101,6 +144,10 @@ Perguntar a cada 10 s, aceitar resposta em até 2,5 s:
 
 Enquanto o enlace está caído, o vaso pergunta `PING` em vez de `PEDE_VEREDITO` —
 é mais barato e não acorda o sensor da câmera à toa.
+
+**Durante uma foto, a escada para.** A câmera está ocupada transmitindo, e contar
+isso como falha acabaria reiniciando a câmera no meio da própria foto. A foto tem
+prazo próprio, `FOTO_TIMEOUT_MS` (15 s).
 
 **A câmera nunca manda na bomba** por padrão. A razão está em `BOMBA_EXIGE_PLANTA`
 no [`config.h`](../include/config.h): câmera suja ou às escuras vira "não há

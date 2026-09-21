@@ -175,6 +175,35 @@ Três pontos que quebram a montagem se passarem batido:
 3. **O anel de 16 WS2812 em brilho cheio puxa ~0,96 A.** É mais que a porta USB
    inteira. O firmware calcula o brilho a partir do orçamento e nunca passa disso.
 
+## Leitura que não é leitura: sensor solto
+
+Em 21/09/2026 apareceu um defeito que o bloqueio de energia vinha escondendo. Com
+o sensor de solo solto, o pino encostou em 4095 — e o firmware classificou isso
+como **"solo extremamente seco, irrigue"**. O tanque solto, também em 4095, virou
+**"100% cheio"** — e tanque cheio libera a bomba. Os dois erros apontavam para o
+mesmo lado: bomba ligada, sem água, por causa de um fio. Quem impedia era o
+bloqueio de energia, e só por acaso; tirá-lo para o botão do app funcionar teria
+exposto o defeito.
+
+Desde então, leitura fora da faixa **fisicamente possível** não é leitura:
+
+| Sensor | Faixa física em 3V3 | Encostou no teto | Encostou no chão |
+| --- | --- | --- | --- |
+| solo (capacitivo) | ~1,2 V a ~2,8 V → ADC ~1500 a ~3700 | **sem leitura** | **sem leitura** |
+| nível (Funduino) | 0 a ~2,6 V → ADC 0 a ~3400 | **sem leitura** | tanque vazio — de verdade |
+
+O corte é `ADC_PISO_VALIDO` (40) e `ADC_TETO_VALIDO` (4050), em `config.h`. No
+nível, só o teto invalida: o chão é tanque vazio de verdade, e já bloqueia a bomba
+pelo outro lado. Os dois defeitos caem no lado seguro.
+
+**O limite desta regra.** Ela pega o pino que encosta num trilho, que foi o que a
+bancada mostrou em 21/09. **Não pega** o pino que flutua no meio da faixa, que foi
+o que a bancada mostrou em 09/09 — solo passeando entre 400 e 800. Para esse caso
+não há regra de software confiável: um valor flutuante no meio da faixa é
+indistinguível de uma leitura. A saída é de montagem — não ligar a bomba com
+sensor desconectado — e, se um dia virar problema, um resistor de pull-down alto
+na entrada analógica, que faz o sensor solto ler zero em vez de flutuar.
+
 ## Calibração — leia antes de confiar em qualquer leitura
 
 Os limiares em [`include/config.h`](../include/config.h) são **ponto de partida,
