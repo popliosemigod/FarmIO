@@ -77,6 +77,7 @@ inline size_t jsonSensores(char* buf, size_t len) {
       "\"cam_falhas\":%u,\"cam_resets\":%u,\"cam_ms\":%u,"
       "\"planta\":%s,\"planta_prob\":%u,\"planta_media\":%u,"
       "\"planta_classe\":%u,\"planta_cobertura\":%u,\"planta_flags\":%u,"
+      "\"planta_calibrada\":%s,"
       "\"foto_estado\":\"%s\",\"foto_numero\":%lu,"
       "\"energia_teto_ma\":%u,\"energia_ma\":%u,\"anel_brilho\":%u}",
       FARMIO_NOME, FARMIO_VERSAO, (unsigned long)(millis() / 1000UL), temp, umid, L.soloAdc, faixa,
@@ -86,8 +87,8 @@ inline size_t jsonSensores(char* buf, size_t len) {
       Bomba::manualRestanteS(), (unsigned long)(B.manualTotalMs / 1000UL), B.manualAcionamentos,
       riscosAtivos, WiFi.RSSI(), (unsigned long)ESP.getFreeHeap(), V.enlaceOk ? "true" : "false",
       V.quadros, V.falhas, V.resets, V.msCamera, V.temPlanta ? "true" : "false", V.probabilidade,
-      V.mediaFiltrada, V.classe, V.cobertura, V.flags, Camera::nomeEstadoFoto(f.estado),
-      (unsigned long)f.numero, Energia::teto(),
+      V.mediaFiltrada, V.classe, V.cobertura, V.flags, VISAO_CALIBRADA ? "true" : "false",
+      Camera::nomeEstadoFoto(f.estado), (unsigned long)f.numero, Energia::teto(),
       Energia::estimativaMa(V.enlaceOk, Anel::brilhoAtual(), B.ligada), Anel::brilhoAtual());
 }
 
@@ -151,6 +152,7 @@ img.foto{width:100%;border-radius:10px;margin-top:10px;display:block;background:
 <button class=bt id=btnb>Ligar bomba</button></div>
 <div class="carta larga"><div class=rot>Camera</div><div class=val id=p>--</div>
 <div class=barra><i id=pb></i></div><div class=rot id=pd></div>
+<div class=nota id=pcal hidden>deteccao de planta ainda nao calibrada com foto real - confira pela foto</div>
 <img class=foto id=foto alt="foto da camera do vaso" hidden>
 <div class=barra id=fbar hidden><i id=fb></i></div>
 <div class=nota id=fi>nenhuma foto ainda</div>
@@ -249,6 +251,7 @@ async function tick(){
    $('p').innerHTML=(d.planta?'<span class=on>planta a vista</span>':cl[d.planta_classe]||'--');
    $('pb').style.width=(d.planta_media/10)+'%';
   }
+  $('pcal').hidden=d.planta_calibrada;
   $('pd').textContent=(d.planta_prob/10).toFixed(0)+'% neste quadro · '+
    (d.planta_cobertura/10).toFixed(0)+'% de verde · '+d.cam_quadros+' quadros · '+
    d.cam_falhas+' falhas · '+d.cam_resets+' resets'+

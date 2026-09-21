@@ -1,6 +1,7 @@
 // =====================================================================
 //  FarmIO - main_cam.cpp
-//  Firmware da ESP32-CAM (AI-Thinker). Tudo pelo fio, nada pelo radio:
+//  Firmware da camera: Seeed XIAO ESP32-S3 Sense (a placa da bancada)
+//  ou ESP32-CAM AI-Thinker. Tudo pelo fio, nada pelo radio:
 //
 //    veredito  "tem planta na frente?" - doze bytes, a cada 10 s
 //    foto      um JPEG inteiro, so quando o app pede
@@ -26,9 +27,14 @@
 //  tamanho so de quadro serve os dois usos, sem trocar a configuracao do
 //  sensor no meio do caminho.
 //
-//  Gravar:  pio run -e cam -t upload
-//  (adaptador USB-TTL no header de gravacao - GPIO1/GPIO3 -, GPIO0 no
-//   GND durante o reset. O enlace usa GPIO14/15 e nao precisa sair.)
+//  BANCADA PELO CONSOLE. Na XIAO o console e o USB nativo, e isso
+//  permite ensaiar a camera sem o C3 ligado: 'v' classifica o que a
+//  camera ve, 'F' manda o JPEG para o PC. E como se confere a camera
+//  antes de confiar no enlace - uma coisa de cada vez.
+//
+//  Gravar:  pio run -e cam -t upload           (XIAO, pelo USB-C)
+//           pio run -e cam-aithinker -t upload (AI-Thinker, adaptador
+//           USB-TTL no header de gravacao e GPIO0 no GND no reset)
 // =====================================================================
 #include <Arduino.h>
 #include "esp_camera.h"
@@ -50,6 +56,7 @@ static Visao::Parametros g_par;
 static jpg_scale_t g_escala = JPG_SCALE_4X;
 static uint16_t g_largura   = 640;
 static uint16_t g_altura    = 480;
+static uint16_t g_sensorPid = 0;
 
 static const int RGB_LARG     = 160;
 static const int RGB_ALT      = 120;
@@ -87,10 +94,15 @@ static bool iniciaCamera() {
   c.pixel_format = PIXFORMAT_JPEG;
   c.grab_mode    = CAMERA_GRAB_LATEST;
 
-  // Qualidade 14 (10..63, menor = melhor e maior): uma VGA fica em 20 a
-  // 30 kB. E o numero que decide quanto a foto demora no fio - cada 11 kB
-  // e um segundo a 115200 bps.
-  c.jpeg_quality = 14;
+  // Qualidade 18 (10..63, menor = melhor e maior). E o numero que decide
+  // quanto a foto demora no fio - cada 11 kB e um segundo a 115200 bps.
+  //
+  // Era 14, com a estimativa de 20 a 30 kB por VGA. A primeira foto real,
+  // em 21/09/2026, deu 49,9 kB - e era de uma parede. Folhagem tem mais
+  // detalhe e comprime PIOR, entao o caso de uso de verdade estouraria o
+  // limite do vaso. O classificador nao sente a diferenca: ele le a imagem
+  // reduzida a 1/4.
+  c.jpeg_quality = 18;
 
   if (psramFound()) {
     c.frame_size  = FRAMESIZE_VGA;  // 640x480
@@ -120,14 +132,35 @@ static bool iniciaCamera() {
 
   sensor_t* s = esp_camera_sensor_get();
   if (s) {
-    // A OV2640 sai de fabrica com a imagem espelhada e de cabeca para
-    // baixo em relacao ao encaixe mecanico da AI-Thinker.
-    s->set_vflip(s, 1);
-    s->set_hmirror(s, 1);
+    // A XIAO Sense sai de fabrica com OV2640 ou OV3660, conforme o lote.
+    // O driver detecta sozinho; o log diz qual veio, porque orientacao e
+    // cor padrao mudam entre os dois.
+    const uint16_t pid = s->id.PID;
+    g_sensorPid        = pid;
+    Serial.printf("[cam] sensor %s (PID 0x%04x)\n",
+                  pid == OV2640_PID   ? "OV2640"
+                  : pid == OV3660_PID ? "OV3660"
+                  : pid == OV5640_PID ? "OV5640"
+                                      : "desconhecido",
+                  pid);
+    // Orientacao vem do config.h, por placa - ver CAM_VFLIP.
+    s->set_vflip(s, CAM_VFLIP);
+    s->set_hmirror(s, CAM_HMIRROR);
     // Saturacao no zero de proposito: o classificador mede cromaticidade,
     // e realce de saturacao empurraria terra avermelhada para dentro da
     // faixa de "verde" tanto quanto folha.
     s->set_saturation(s, 0);
+
+    // O OV3660 sai de fabrica com cor exagerada e de cabeca para baixo.
+    // Os tres ajustes sao os do exemplo oficial da Espressif e da Seeed
+    // para este sensor - configuracao do SENSOR, nao ajuste do modelo.
+    // Aplicados em 21/09/2026, depois de a primeira foto real sair com
+    // tom ciano-esverdeado na imagem inteira.
+    if (pid == OV3660_PID) {
+      s->set_vflip(s, CAM_VFLIP ? 0 : 1);
+      s->set_brightness(s, 1);
+      s->set_saturation(s, -2);
+    }
   }
   return true;
 }
@@ -198,21 +231,24 @@ static bool classifica(Enlace::CargaVeredito& fora) {
 //  vaso sabe que ela esta ocupada - ele mesmo pediu, e para de perguntar
 //  ate a foto terminar.
 // ---------------------------------------------------------------------
+// O primeiro quadro da fila pode ser velho: com dois buffers, o driver
+// entrega o ultimo quadro COMPLETO, que pode ter sido capturado antes de
+// alguem mexer na cena. Um descartado custa ~70 ms e garante que a foto
+// e do instante do pedido.
+static camera_fb_t* capturaFresca() {
+  camera_fb_t* velho = esp_camera_fb_get();
+  if (velho) esp_camera_fb_return(velho);
+  return esp_camera_fb_get();
+}
+
 static void enviaFoto() {
   if (!g_cameraOk) {
     enviaErroFoto(Enlace::FOTO_ERRO_SEM_CAMERA);
     return;
   }
 
-  // O primeiro quadro da fila pode ser velho: com dois buffers, o driver
-  // entrega o ultimo quadro COMPLETO, que pode ter sido capturado antes
-  // de alguem mexer na cena. Um descartado custa ~70 ms e garante que a
-  // foto e do instante do pedido.
-  camera_fb_t* velho = esp_camera_fb_get();
-  if (velho) esp_camera_fb_return(velho);
-
   const uint32_t t0 = millis();
-  camera_fb_t* fb   = esp_camera_fb_get();
+  camera_fb_t* fb   = capturaFresca();
   if (!fb) {
     enviaErroFoto(Enlace::FOTO_ERRO_CAPTURA);
     return;
@@ -237,6 +273,7 @@ static void enviaFoto() {
     Enlace::poe32(c, desloc);
     memcpy(c + 4, fb->buf + desloc, n);
     envia(Enlace::TIPO_FOTO_PEDACO, c, (uint8_t)(4 + n));
+    feedLoopWDT();  // a foto leva 2 a 3 s; o watchdog do loop, 5
   }
 
   Enlace::poe32(c, (uint32_t)fb->len);
@@ -296,16 +333,85 @@ static void trata(const Enlace::Quadro& q) {
 }
 
 // ---------------------------------------------------------------------
+//  Console de bancada. Nada daqui passa pelo enlace: e o jeito de
+//  conferir a camera sozinha, antes de ligar os fios do C3.
+// ---------------------------------------------------------------------
+static void consoleVeredito() {
+  Enlace::CargaVeredito v;
+  const bool ok = classifica(v);
+  if (!ok) {
+    Serial.println("[console] classificacao falhou");
+    return;
+  }
+  static const char* const CLASSE[] = {"sem planta", "provavel", "planta"};
+  Serial.printf(
+      "[console] %s | prob %u permil | verde %u permil | %u aglomerados | "
+      "flags 0x%02x | %u ms\n",
+      v.classe <= 2 ? CLASSE[v.classe] : "?", v.probabilidade, v.cobertura, v.clusters, v.flags,
+      v.ms);
+}
+
+// Manda o JPEG cru entre marcadores. O script de bancada procura o
+// marcador, le exatamente 'tamanho' bytes e grava um .jpg - e a unica
+// forma de VER o que a camera ve antes de o vaso existir inteiro.
+static void consoleFoto() {
+  if (!g_cameraOk) {
+    Serial.println("[console] camera nao iniciou");
+    return;
+  }
+  camera_fb_t* fb = capturaFresca();
+  if (!fb) {
+    Serial.println("[console] captura falhou");
+    return;
+  }
+  Serial.printf("\n@@FOTO@@ %u %u %u\n", (unsigned)fb->len, fb->width, fb->height);
+  Serial.write(fb->buf, fb->len);
+  Serial.print("\n@@FIM@@\n");
+  esp_camera_fb_return(fb);
+}
+
+static void console() {
+  while (Serial.available()) {
+    switch (Serial.read()) {
+      case 'v': consoleVeredito(); break;
+      case 'F': consoleFoto(); break;
+      case 's':
+        // O log de boot sai antes de o PC abrir a porta USB e se perde;
+        // este comando repete o que ele diria.
+        Serial.printf(
+            "[console] sensor 0x%04x (%s) | camera %s | psram %s | %ux%u | "
+            "%lu quadros, %lu fotos | %lu s no ar\n",
+            g_sensorPid,
+            g_sensorPid == OV2640_PID   ? "OV2640"
+            : g_sensorPid == OV3660_PID ? "OV3660"
+            : g_sensorPid == OV5640_PID ? "OV5640"
+                                        : "?",
+            g_cameraOk ? "ok" : "FALHOU", psramFound() ? "sim" : "nao", g_largura, g_altura,
+            (unsigned long)g_quadros, (unsigned long)g_fotos, (unsigned long)(millis() / 1000UL));
+        break;
+      case 'h':
+        Serial.println(
+            "[console] s = estado | v = classifica o que a camera ve | "
+            "F = manda o JPEG ao PC");
+        break;
+      default: break;
+    }
+  }
+}
+
+// ---------------------------------------------------------------------
 void setup() {
   Serial.begin(115200);
 
   // O LED de flash de 1 W fica desligado, e explicitamente. Ele sozinho
   // puxa mais corrente que a placa inteira e estoura o orcamento de USB
   // do projeto - ver docs/06-energia-usb.md.
-  pinMode(CAM_PIN_LED_FLASH, OUTPUT);
-  digitalWrite(CAM_PIN_LED_FLASH, LOW);
-  pinMode(CAM_PIN_LED_VERMELHO, OUTPUT);
-  digitalWrite(CAM_PIN_LED_VERMELHO, HIGH);  // ativo em nivel baixo: apagado
+  if (CAM_PIN_LED_FLASH >= 0) {
+    pinMode(CAM_PIN_LED_FLASH, OUTPUT);
+    digitalWrite(CAM_PIN_LED_FLASH, LOW);
+  }
+  pinMode(CAM_PIN_LED_ENLACE, OUTPUT);
+  digitalWrite(CAM_PIN_LED_ENLACE, HIGH);  // ativo em nivel baixo: apagado
 
   // A camera so recebe pedidos curtos, entao a fila de recepcao padrao
   // basta. A de TRANSMISSAO e que importa, e o write() bloqueia quando
@@ -324,6 +430,12 @@ void setup() {
   g_cameraOk = iniciaCamera();
   g_rgb      = (uint8_t*)(psramFound() ? ps_malloc(RGB_BYTES) : malloc(RGB_BYTES));
 
+  // WATCHDOG DO LOOP. Na XIAO nao ha pino de reset para o vaso pulsar,
+  // entao a camera tem de se recuperar sozinha: se o loop ficar 5 s sem
+  // voltar, o proprio chip reinicia. E o que substitui o degrau de reset
+  // da escada de recuperacao - ver docs/04.
+  enableLoopWDT();
+
   Serial.printf("[cam] camera %s | psram %s | %ux%u | buffer %s | sem radio\n",
                 g_cameraOk ? "ok" : "FALHOU", psramFound() ? "sim" : "nao", g_largura, g_altura,
                 g_rgb ? "ok" : "FALHOU");
@@ -335,6 +447,8 @@ void loop() {
   Enlace::Quadro q;
   while (g_rec.proximo(q)) trata(q);
 
+  console();
+
   // ---- Camera que nao subiu: tenta de novo, sem travar o loop ---------
   static uint32_t proximaTentativa = 0;
   if (!g_cameraOk && (int32_t)(millis() - proximaTentativa) >= 0) {
@@ -342,9 +456,9 @@ void loop() {
     g_cameraOk       = iniciaCamera();
   }
 
-  // ---- LED vermelho: aceso quando o vaso esta falando com ela ---------
+  // ---- LED de enlace: aceso quando o vaso esta falando com ela --------
   const bool enlaceVivo = g_ultimoPing && (millis() - g_ultimoPing) < 30000;
-  digitalWrite(CAM_PIN_LED_VERMELHO, enlaceVivo ? LOW : HIGH);
+  digitalWrite(CAM_PIN_LED_ENLACE, enlaceVivo ? LOW : HIGH);
 
   delay(1);  // devolve a CPU para a tarefa ociosa, que alimenta o watchdog
 }

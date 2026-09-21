@@ -394,7 +394,10 @@ inline uint8_t riscos() {
   if (!V.enlaceOk && V.falhas > 0) r |= RISCO_CAMERA_MUDA;
   // So reclama de "sem planta" com o filtro cheio: opinar com duas
   // amostras seria alarme na hora de ligar o vaso.
-  if (V.enlaceOk && filtro().amostras() >= 4 && !V.temPlanta) r |= RISCO_SEM_PLANTA;
+  // E so com a visao calibrada - ver VISAO_CALIBRADA em config.h.
+  if (VISAO_CALIBRADA && V.enlaceOk && filtro().amostras() >= 4 && !V.temPlanta) {
+    r |= RISCO_SEM_PLANTA;
+  }
   return r;
 }
 

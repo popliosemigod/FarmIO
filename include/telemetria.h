@@ -169,6 +169,9 @@ inline void bloco() {
     Serial.printf("sem planta        %u%% neste quadro, %u%% filtrado\n", V.probabilidade / 10,
                   V.mediaFiltrada / 10);
   }
+  if (V.enlaceOk && !VISAO_CALIBRADA) {
+    Serial.println(F("            (deteccao NAO CALIBRADA: confira pela foto, 'f')"));
+  }
   Serial.printf("            %u quadros, %u falhas, %u resets  |  UART1 RX=%d TX=%d\n", V.quadros,
                 V.falhas, V.resets, PIN_CAM_RX, PIN_CAM_TX);
   if (V.enlaceOk) {

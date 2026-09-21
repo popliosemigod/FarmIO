@@ -11,7 +11,8 @@
 #pragma once
 #include <Arduino.h>
 
-#if !defined(FARMIO_PLACA_C3) && !defined(FARMIO_PLACA_ESP32DEV) && !defined(FARMIO_PLACA_CAM)
+#if !defined(FARMIO_PLACA_C3) && !defined(FARMIO_PLACA_ESP32DEV) && !defined(FARMIO_PLACA_CAM) && \
+    !defined(FARMIO_PLACA_XIAO_CAM)
 #define FARMIO_PLACA_C3 1
 #endif
 
@@ -177,7 +178,19 @@
 #define ANEL_BRILHO 40  // 0..255
 
 // =====================================================================
-//  PINAGEM DA ESP32-CAM (AI-Thinker) - usada so pelo firmware da camera
+//  PINAGEM DA CAMERA - usada so pelo firmware da camera
+//
+//  DUAS PLACAS DE CAMERA POSSIVEIS, escolhidas por flag do platformio.ini,
+//  pelo mesmo motivo das duas placas de controle: trocar de placa tem de
+//  ser mexer em um arquivo so.
+//
+//    FARMIO_PLACA_XIAO_CAM  Seeed XIAO ESP32-S3 Sense - A PLACA DA BANCADA
+//    FARMIO_PLACA_CAM       ESP32-CAM AI-Thinker - a da v0.2, mantida
+//                           compilando pelo mesmo motivo da DevKit V1
+// =====================================================================
+#if defined(FARMIO_PLACA_CAM)
+// ---------------------------------------------------------------------
+//  ESP32-CAM AI-Thinker
 //
 //  Os pinos do sensor sao fixos pela placa e nao ha o que escolher. O
 //  que foi escolhido e o par do enlace: GPIO14 e GPIO15, que na
@@ -185,18 +198,15 @@
 //
 //  POR QUE NAO GPIO1/GPIO3, que e o header de gravacao. Porque e por ali
 //  que a ROM cospe o log de boot a 115200 toda vez que a camera reinicia,
-//  e porque desligar o enlace para regravar a camera vira rotina. GPIO14
-//  e GPIO15 deixam o header de gravacao livre: regravar a camera nao
-//  exige desmontar nada.
+//  e porque desligar o enlace para regravar a camera vira rotina.
 //
 //  GPIO15 e strapping (MTDO) e precisa estar alto no boot. Linha de RX
-//  de UART em repouso E alta, entao o enlace mantem o nivel correto
-//  sozinho - e se o C3 estiver desligado, o pull-up interno da conta.
-// =====================================================================
-#define CAM_PIN_ENLACE_TX    14  // -> RX do C3
-#define CAM_PIN_ENLACE_RX    15  // <- TX do C3
-#define CAM_PIN_LED_FLASH    4   // LED branco de 1 W: NUNCA ligar em USB
-#define CAM_PIN_LED_VERMELHO 33
+//  de UART em repouso E alta, entao o enlace mantem o nivel correto.
+// ---------------------------------------------------------------------
+#define CAM_PIN_ENLACE_TX  14  // -> RX do C3
+#define CAM_PIN_ENLACE_RX  15  // <- TX do C3
+#define CAM_PIN_LED_FLASH  4   // LED branco de 1 W: NUNCA ligar em USB
+#define CAM_PIN_LED_ENLACE 33  // LED vermelho da placa, ativo em nivel baixo
 
 #define CAM_PIN_PWDN  32
 #define CAM_PIN_RESET -1
@@ -214,6 +224,67 @@
 #define CAM_PIN_VSYNC 25
 #define CAM_PIN_HREF  23
 #define CAM_PIN_PCLK  22
+
+// A OV2640 sai espelhada e de cabeca para baixo em relacao ao encaixe
+// mecanico da AI-Thinker.
+#define CAM_VFLIP   1
+#define CAM_HMIRROR 1
+
+#else
+// ---------------------------------------------------------------------
+//  Seeed XIAO ESP32-S3 Sense - A PLACA DA BANCADA desde 21/09/2026
+//
+//  ESP32-S3R8: 8 MB de PSRAM no proprio chip, 8 MB de flash, USB nativo.
+//  O sensor fica na placa de expansao Sense e usa pinos internos - nenhum
+//  dos onze da borda. Os pinos abaixo sao os da Seeed, os mesmos do
+//  exemplo CameraWebServer do core Arduino-ESP32.
+//
+//  O ENLACE VAI EM D0/D1 (GPIO1/GPIO2), e a escolha foi por eliminacao:
+//
+//    D6/D7 (GPIO43/44) - sao a UART0, e a ROM cospe o log de boot no
+//                        GPIO43 a cada reinicio, mesmo com o console no
+//                        USB nativo. Mesmo motivo que tirou o enlace do
+//                        header de gravacao da AI-Thinker.
+//    D2    (GPIO3)     - strapping do S3.
+//    D8-D10 (GPIO7-9)  - na placa Sense, sao o SPI do cartao SD.
+//
+//  Sobram D0 e D1, que nao tem funcao nenhuma na Sense.
+//
+//  SEM PINO DE RESET NA BORDA. O EN da XIAO so existe no botao de reset -
+//  nao ha pino para o C3 pulsar. A escada de recuperacao do vaso continua
+//  pulsando o GPIO7 dele, sem efeito ate alguem soldar um fio no botao; o
+//  que segura a camera travada e o watchdog do proprio loop dela, em
+//  main_cam.cpp.
+// ---------------------------------------------------------------------
+#define CAM_PIN_ENLACE_TX  1   // D0 -> RX do C3 (GPIO20)
+#define CAM_PIN_ENLACE_RX  2   // D1 <- TX do C3 (GPIO21)
+#define CAM_PIN_LED_FLASH  -1  // a XIAO nao tem flash
+#define CAM_PIN_LED_ENLACE 21  // LED de usuario da XIAO, ativo em nivel baixo
+
+#define CAM_PIN_PWDN  -1
+#define CAM_PIN_RESET -1
+#define CAM_PIN_XCLK  10
+#define CAM_PIN_SIOD  40
+#define CAM_PIN_SIOC  39
+#define CAM_PIN_D7    48
+#define CAM_PIN_D6    11
+#define CAM_PIN_D5    12
+#define CAM_PIN_D4    14
+#define CAM_PIN_D3    16
+#define CAM_PIN_D2    18
+#define CAM_PIN_D1    17
+#define CAM_PIN_D0    15
+#define CAM_PIN_VSYNC 38
+#define CAM_PIN_HREF  47
+#define CAM_PIN_PCLK  13
+
+// Orientacao NAO CONFIRMADA. Estes sao os valores do exemplo da Seeed
+// para a OV2640; a primeira foto real diz se a imagem sai de cabeca para
+// baixo. Se sair, e aqui que se corrige - e nao no classificador, que nao
+// se importa com orientacao.
+#define CAM_VFLIP     0
+#define CAM_HMIRROR   0
+#endif
 
 // =====================================================================
 //  ENLACE C3 <-> ESP32-CAM
@@ -266,6 +337,23 @@
 //  secar por causa de uma lente empoeirada. Enquanto nao houver ensaio
 //  medindo falso negativo com planta real, a visao AVISA e nao MANDA.
 #define BOMBA_EXIGE_PLANTA 0
+
+// A VISAO AINDA NAO FOI CALIBRADA COM FOTO REAL. Em 21/09/2026 a primeira
+// foto de verdade - uma parede, um carretel de filamento, nenhuma planta -
+// saiu classificada como "planta, 1000 permil", tres vezes seguidas. O
+// modelo foi treinado em cena sintetica, e a primeira cena real o
+// derrubou. Hipotese: o sensor entrega tom verde nas areas escuras, e o
+// ExG normalizado, que divide pela soma dos canais, amplifica esse tom.
+//
+// Enquanto isto estiver em 0:
+//   - a pagina e a serial mostram o veredito COM o aviso de nao calibrado;
+//   - o alarme "nenhuma planta a vista" nao dispara - alarme de uma
+//     medida que ja errou com confianca maxima e ruido, nao informacao.
+//
+// Passar para 1 so depois de retreinar com fotos reais - com e sem planta,
+// tiradas pela propria camera ('F' no console dela) - e registrar no
+// diario o acerto medido nelas.
+#define VISAO_CALIBRADA 0
 
 // =====================================================================
 //  ENERGIA - o projeto inteiro em uma porta USB
@@ -399,11 +487,18 @@
 #define BOMBA_MANUAL_LEASE_MS 6000
 
 // ---- Foto sob demanda -----------------------------------------------
-//  A foto vem pelo FIO, nao pelo Wi-Fi - ver docs/04. A 115200 bps uma
-//  VGA em JPEG leva de 2 a 3 s, entao o teto de 15 s so estoura quando
-//  algo realmente deu errado.
+//  A foto vem pelo FIO, nao pelo Wi-Fi - ver docs/04.
+//
+//  O teto de tamanho subiu de 60 para 80 kB em 21/09/2026, depois da
+//  primeira foto real: 49,9 kB de uma parede, com a qualidade antiga. Uma
+//  planta tem mais detalhe que uma parede e comprime pior - o limite
+//  antigo recusaria justamente a foto que o vaso existe para tirar. 80 kB
+//  a 115200 bps sao ~7,5 s de fio, dentro do prazo de 15 s.
+//
+//  O C3 aloca o buffer inteiro de uma vez; com ~190 kB livres depois do
+//  boot, 80 kB cabem num bloco so.
 #define FOTO_TIMEOUT_MS 15000
-#define FOTO_MAX_BYTES  61440  // 60 kB: VGA com folga; recusa acima disso
+#define FOTO_MAX_BYTES  81920  // 80 kB; recusa acima disso
 
 #define BOMBA_PASSO_MS 4000  // pulso de irrigacao
 #define BOMBA_DESCANSO_MS \
