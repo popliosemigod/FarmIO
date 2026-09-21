@@ -73,13 +73,14 @@ enum Tipo : uint8_t {
   TIPO_VEREDITO      = 0x11,  // cam  -> vaso resultado da classificacao
   // 0x20 era TIPO_ANUNCIA_IP, da v1: a camera anunciava o IP do video.
   // Reservado - nao reaproveitar, para uma placa velha nunca confundir.
-  TIPO_CONFIG      = 0x30,  // vaso -> cam  ajusta cadencia e limiar
-  TIPO_PEDE_FOTO   = 0x40,  // vaso -> cam  "tira uma foto e me manda"
-  TIPO_FOTO_INICIO = 0x41,  // cam  -> vaso tamanho, largura, altura
-  TIPO_FOTO_PEDACO = 0x42,  // cam  -> vaso deslocamento + bytes do JPEG
-  TIPO_FOTO_FIM    = 0x43,  // cam  -> vaso tamanho total + CRC da imagem
-  TIPO_FOTO_ERRO   = 0x44,  // cam  -> vaso codigo + texto
-  TIPO_LOG         = 0x7F   // cam  -> vaso texto livre de diagnostico
+  TIPO_CONFIG       = 0x30,  // vaso -> cam  ajusta cadencia e limiar
+  TIPO_PEDE_FOTO    = 0x40,  // vaso -> cam  "tira uma foto e me manda"
+  TIPO_FOTO_INICIO  = 0x41,  // cam  -> vaso tamanho, largura, altura
+  TIPO_FOTO_PEDACO  = 0x42,  // cam  -> vaso deslocamento + bytes do JPEG
+  TIPO_FOTO_FIM     = 0x43,  // cam  -> vaso tamanho total + CRC da imagem
+  TIPO_FOTO_ERRO    = 0x44,  // cam  -> vaso codigo + texto
+  TIPO_FOTO_REENVIA = 0x45,  // vaso -> cam  "reenvie a foto a partir deste byte"
+  TIPO_LOG          = 0x7F   // cam  -> vaso texto livre de diagnostico
 };
 
 // ---- Cargas da foto ---------------------------------------------------
@@ -105,7 +106,89 @@ static const uint8_t FOTO_PEDACO_MAX   = CARGA_MAX - 4;
 enum ErroFoto : uint8_t {
   FOTO_ERRO_SEM_CAMERA = 1,  // o sensor nao iniciou
   FOTO_ERRO_CAPTURA    = 2,  // esp_camera_fb_get devolveu nada
-  FOTO_ERRO_FORMATO    = 3   // quadro que nao e JPEG
+  FOTO_ERRO_FORMATO    = 3,  // quadro que nao e JPEG
+  FOTO_ERRO_SEM_COPIA  = 4   // pediram reenvio de uma foto que a camera nao guarda mais
+};
+
+// ---- Retransmissao da foto --------------------------------------------
+//
+//  REENVIA (8 B) - vaso -> cam: deslocamento u32 | tamanho total u32
+//
+//  O fio entre as placas e um jumper de bancada, e perde quadro: medido em
+//  21/09/2026, 2 CRC ruins e 381 B de lixo em 43 kB - cerca de 1%. Com
+//  70 a 150 quadros por foto, uma foto sem retransmissao falha com
+//  frequencia. Perder a foto inteira por um quadro de 196 bytes e o pior
+//  custo-beneficio do protocolo.
+//
+//  O vaso pede "a partir do byte X"; a camera, que guarda a ultima foto,
+//  reenvia dali ate o FIM. O TAMANHO TOTAL no pedido e uma trava: se a
+//  camera ja tirou outra foto, o tamanho nao bate e ela recusa, em vez de
+//  mandar pedacos de uma imagem para remendar outra.
+static const uint8_t FOTO_REENVIA_BYTES = 8;
+
+// Remontagem da foto no vaso, sem nada de Arduino - e por isso o autoteste
+// consegue simular um fio ruim e provar que fecha. Quem chama poe o relogio.
+//
+//  Politica:
+//   - todo pedaco que chega vai para o lugar dele e e marcado num mapa,
+//     mesmo adiante de um buraco: jogar fora o que veio depois do buraco
+//     obrigaria a camera a reenviar o que ja chegou, e cada reenvio
+//     arrisca de novo os mesmos quadros;
+//   - buraco detectado pede reenvio UMA vez, a partir do primeiro pedaco
+//     que falta; a camera reenvia dali ate o FIM, e o que ja estava no
+//     mapa chega repetido e e ignorado;
+//   - FIM incompleto pede reenvio; FIM completo com CRC errado recomeca do
+//     zero (o CRC do JPEG pega o que o CRC de cada quadro deixou passar);
+//   - nada chegando por ESPERA_MS pede de novo: cobre o FIM perdido e o
+//     proprio pedido de reenvio perdido;
+//   - depois de REENVIOS_MAX pedidos, desiste com motivo - fio ruim demais
+//     para prometer foto, e melhor dizer isso do que insistir para sempre.
+//
+//  O mapa trabalha em pedacos de FOTO_PEDACO_MAX bytes alinhados em zero,
+//  que e como a camera fatia a foto. Pedido de reenvio sempre comeca num
+//  limite de pedaco, entao o alinhamento se mantem.
+class RemontaFoto {
+public:
+  enum Acao : uint8_t {
+    NADA = 0,
+    PEDE_REENVIO,
+    PRONTA,
+    FALHOU
+  };
+
+  static const uint8_t REENVIOS_MAX = 12;
+  static const uint32_t ESPERA_MS   = 1200;
+  static const uint16_t SLOTS_MAX   = 512;  // 512 x 196 B = 100 kB de foto, no maximo
+
+  RemontaFoto();
+
+  // 'buf' tem 'total' bytes e e do chamador.
+  void inicia(uint8_t* buf, uint32_t total, uint32_t agoraMs);
+
+  Acao pedaco(uint32_t desloc, const uint8_t* dados, uint32_t n, uint32_t agoraMs);
+  Acao fim(uint32_t total, uint16_t crc, uint32_t agoraMs);
+  Acao parado(uint32_t agoraMs);  // chamar de vez em quando enquanto recebe
+
+  uint32_t recebido() const { return recebidos_; }  // bytes ja no lugar, para o progresso
+  uint32_t contiguo() const;  // primeiro byte que falta: de onde pedir reenvio
+  uint32_t total() const { return total_; }
+  uint8_t reenvios() const { return reenvios_; }
+  const char* motivo() const { return motivo_; }
+
+private:
+  Acao pedeReenvio(uint32_t agoraMs);
+  Acao falha(const char* motivo);
+  bool tem(uint16_t slot) const { return mapa_[slot >> 3] & (1 << (slot & 7)); }
+  uint16_t slots() const;
+
+  uint8_t* buf_;
+  uint32_t total_, recebidos_;
+  uint32_t vivoEm_, pedidoEm_;
+  uint16_t prox_;  // primeiro pedaco que falta
+  uint8_t reenvios_;
+  bool pedido_, encerrada_;
+  const char* motivo_;
+  uint8_t mapa_[SLOTS_MAX / 8];
 };
 
 struct Quadro {

@@ -1,15 +1,48 @@
-# FarmIO
+<div align="center">
 
-**Vaso inteligente e automático.** Irriga sozinho, enxerga se há planta na frente,
-avisa o que está errado e mostra tudo em três lugares: no display, na página web e
-na serial.
+# 🌱 FarmIO
 
-> **Estado: as duas placas estão gravadas e rodam separadas.** O vaso lê os
-> sensores na bancada; a câmera tira foto e classifica. O que ainda não foi
-> ensaiado: o enlace por fio entre as duas, a bomba girando, e o classificador com
-> planta — que **ainda não é calibrado** e já deu um falso positivo com foto real
-> ([docs/05](docs/05-visao-planta.md#o-primeiro-teste-real-um-falso-positivo)). Os limiares dos sensores são ponto de partida, não
-> medida — ver [calibração](docs/02-hardware-e-pinagem.md#calibração--leia-antes-de-confiar-em-qualquer-leitura).
+**Vaso inteligente e automático.**<br>
+Irriga sozinho, enxerga se há planta na frente e se controla pelo celular — sem
+internet, sem computador, só com o roteador do próprio celular.
+
+![Firmware](https://img.shields.io/badge/firmware-v0.2-2ea44f)
+![Placas](https://img.shields.io/badge/placas-ESP32--C3%20%2B%20XIAO%20ESP32--S3-blue)
+![PlatformIO](https://img.shields.io/badge/build-PlatformIO-orange)
+![Ensaio de campo](https://img.shields.io/badge/ensaio%20de%20campo-celular%20ok-brightgreen)
+![Calibração](https://img.shields.io/badge/calibração-parcial-yellow)
+
+<table>
+  <tr>
+    <td align="center" width="50%">
+      <img src="docs/img/vaso-montado.jpg" alt="O vaso FarmIO montado, com terra, mangueira da bomba e a eletrônica na bancada" width="100%"><br>
+      <sub><b>O vaso montado.</b> Corpo impresso em 3D, terra de verdade, a mangueira da bomba
+      entrando por cima e a ponte H na bancada.</sub>
+    </td>
+    <td align="center" width="50%">
+      <img src="docs/img/app-no-celular.jpg" alt="A página do FarmIO aberta no celular, com sensores, botão da bomba e a foto da câmera" width="62%"><br>
+      <sub><b>O app, no celular.</b> Servido pelo próprio vaso: sensores, alerta, botão da
+      bomba e a foto tirada na hora.</sub>
+    </td>
+  </tr>
+</table>
+
+</div>
+
+## Onde está
+
+Ensaio de campo de **21/09/2026**, só com o celular — nenhum PC na conta:
+
+| | Situação |
+| --- | --- |
+| ✅ **App no celular pela rede própria do vaso** (`farmio-01` → `192.168.4.1`) | funcionou |
+| ✅ **App no celular pelo roteador do celular** | funcionou |
+| ✅ **Foto pedida no app**, da câmera até a tela, pelo fio | funcionou; 58 de 58 em bancada, com retransmissão |
+| ✅ **Sensores de ar e solo** na página | leitura viva; terra seca lida como seca |
+| ✅ **Alerta** de solo seco e tanque vazio | na faixa vermelha do topo |
+| ⏳ **Umidade do solo** | calibração **parcial**: ponto seco medido, molhado ainda é chute ([calibração](docs/02-hardware-e-pinagem.md#calibração--leia-antes-de-confiar-em-qualquer-leitura)) |
+| ⏳ **Bomba girando** | não ensaiada: o tanque ainda está vazio |
+| ⚠️ **Detecção de planta** | **não calibrada** — já deu falso positivo com foto real, e a página avisa ([docs/05](docs/05-visao-planta.md#o-primeiro-teste-real-um-falso-positivo)) |
 
 Este é um projeto do laboratório [**Jaspy**](https://github.com/popliosemigod/Jaspy),
 que guarda o método, as ferramentas e a documentação comum. Cada projeto tem
@@ -105,9 +138,10 @@ celular — nem todo Android resolve `.local` —, o caminho que nunca falha é 
 própria: desligar o roteador, entrar em `farmio-01` e abrir `192.168.4.1`. O Android
 avisa que a rede "não tem internet"; é para continuar conectado assim mesmo.
 
-Ensaiado em 21/09/2026 com o roteador emulado: a página responde em ~50 ms, a foto
-chega em ~1,7 s, e o vaso reentra no roteador 17 s depois de ele voltar — ver o
-[diário](diario.md).
+**Os dois caminhos foram ensaiados no celular em 21/09/2026**, com o vaso ligado
+fora do PC. Antes disso, com o roteador emulado, a página respondeu em ~50 ms, a
+foto chegou em ~1,7 s e o vaso reentrou no roteador 17 s depois de ele voltar — ver
+o [diário](diario.md).
 
 ## Consumo de recursos
 
@@ -124,7 +158,7 @@ A câmera encolheu 114 kB em 21/09: é a pilha de Wi-Fi que saiu junto com o ví
 
 ```
 FarmIO/
-├── platformio.ini      cinco ambientes, bibliotecas fixadas, build flags
+├── platformio.ini      sete ambientes, bibliotecas fixadas, build flags
 ├── include/
 │   ├── config.h        pinagem, limiares, orçamento  ← só isso muda ao trocar de placa
 │   ├── sensores.h      DHT22, solo, tanque, filtro de mediana
@@ -145,7 +179,10 @@ FarmIO/
 │   ├── main_cam.cpp        a câmera
 │   ├── main_autoteste.cpp  treino e medição na placa
 │   └── cenas.cpp           desenho das cenas sintéticas
+├── scripts/
+│   └── calibra_solo.py só aceita a leitura do solo depois de ela estabilizar
 ├── docs/               herança, hardware, lógica, enlace, visão, energia
+│   └── img/            fotos do vaso e do app
 └── diario.md           previsto × medido, a cada iteração
 ```
 
@@ -157,8 +194,8 @@ FarmIO/
   treze pinos do C3 e o roteiro de calibração
 - [Lógica de operação](docs/03-logica-de-operacao.md) — faixas, intertravamentos,
   riscos, telas e anel
-- [Enlace C3 ↔ ESP32-CAM](docs/04-enlace-c3-cam.md) — por que fio e não Wi-Fi,
-  formato do quadro, escada de recuperação
+- [Enlace vaso ↔ câmera](docs/04-enlace-c3-cam.md) — por que fio e não Wi-Fi,
+  formato do quadro, retransmissão da foto, diagnóstico do fio
 - [Visão: tem planta na frente?](docs/05-visao-planta.md) — as dez
   características, o treino na placa e as quatro iterações até o modelo atual
 - [O projeto inteiro numa porta USB](docs/06-energia-usb.md) — o orçamento de
@@ -167,19 +204,19 @@ FarmIO/
 
 ## Próximos passos
 
-1. **Ligar os três fios do enlace**: D0 da XIAO no GPIO20 do C3, D1 no GPIO21, e o
-   GND comum. As duas placas já estão gravadas; o fio é o que falta para a foto
-   chegar no app.
+1. **Pôr água no tanque e ensaiar a bomba** na fonte de 7–9 V — primeiro pelo botão
+   do app, depois pelo automático.
 2. **Calibrar a visão com fotos reais.** A primeira foto real já deu falso
    positivo. Com planta na bancada: fotos com e sem planta pelo comando `F` da
    câmera, e o retreino em cima delas.
-3. **Calibrar solo e tanque** com o ambiente `bancada`, na placa nova — os
-   limiares vieram da DevKit V1 e o ADC do C3 tem outra curva.
+3. **Completar a calibração do solo: molhar a terra** até encharcar e medir com
+   `scripts/calibra_solo.py` (espera a leitura estabilizar). O ponto seco já está
+   medido, mas ainda assentando (a leitura seca desceu 50 pontos em 20 min):
+   refazer depois de algumas horas. O molhado, e portanto as faixas do meio,
+   ainda são chute. O tanque também espera água.
 4. **Medir a corrente com amperímetro** e comparar com o `energia_ma` publicado no
    JSON.
-5. **Ensaio de irrigação** com o tanque com água e a bomba na fonte de 7–9 V —
-   primeiro pelo botão do app, depois pelo automático.
-6. **Acoplamento entre vasos**, que dá nome ao projeto. Nenhum protocolo definido
+5. **Acoplamento entre vasos**, que dá nome ao projeto. Nenhum protocolo definido
    ainda — mas o quadro do enlace já é o candidato natural.
 
 ## Convenções
@@ -189,8 +226,8 @@ Commits seguem `tipo(subsistema): descrição`, validados pelo `commitizen`
 `develop` integra o trabalho em curso, `feat/<assunto>` para tarefa curta.
 
 **Tag de versão só nasce de coisa medida.** A v0.2 está na `main` porque compila,
-roda numa placa e tem número medido — mas não recebeu tag, porque nenhum sensor,
-nenhuma bomba e nenhuma câmera foram ligados ainda.
+roda nas duas placas e passou no ensaio de campo com o celular — mas ainda não
+recebeu tag: a bomba não girou e a calibração do solo está pela metade.
 
 ```powershell
 python -m pip install --user pre-commit commitizen

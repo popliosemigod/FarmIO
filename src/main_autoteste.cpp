@@ -159,6 +159,164 @@ static void testaEnlace() {
 //  deslocamentos. A mesma aritmetica da camera (fatiar) e do vaso
 //  (remontar e conferir) roda de ponta a ponta sobre um "JPEG" sintetico.
 // ---------------------------------------------------------------------
+// ---------------------------------------------------------------------
+//  1c. Retransmissao da foto contra um fio ruim
+//
+//  O fio de verdade perdeu ~1% dos quadros (medido em 21/09/2026). Aqui o
+//  canal e simulado com perda muito maior, e o que se cobra e a PROPRIEDADE
+//  que importa: a foto que o vaso entrega e SEMPRE identica a que a camera
+//  guardou - ou o vaso desiste com motivo. Nunca uma foto errada.
+//
+//  A camera simulada e a do main_cam.cpp: guarda a foto, transmite de um
+//  byte ate o FIM, e so atende um pedido depois de terminar a rajada.
+// ---------------------------------------------------------------------
+struct ResultadoFio {
+  int fotos, prontas, desistiu, erradas;
+  uint32_t reenviosTotal, reenviosMax;
+};
+
+static uint32_t g_semente = 20260921u;
+static uint32_t sorteia() {
+  g_semente = g_semente * 1664525u + 1013904223u;
+  return g_semente >> 8;
+}
+
+// Passa um quadro pelo canal: some inteiro, tem um bit trocado, ou passa.
+static void passaPeloCanal(const uint8_t* q, size_t n, int perdaPct, Enlace::Receptor& rx) {
+  const int sorte = (int)(sorteia() % 100);
+  if (sorte < perdaPct / 2) return;  // quadro que nunca chegou
+  uint8_t sujo[Enlace::QUADRO_MAX];
+  memcpy(sujo, q, n);
+  if (sorte < perdaPct) sujo[sorteia() % n] ^= (uint8_t)(1u << (sorteia() % 8));
+  for (size_t i = 0; i < n; i++) rx.empurra(sujo[i]);
+}
+
+static void umaFoto(const uint8_t* img, uint32_t tam, uint16_t crcImg, uint8_t* dest, int perdaPct,
+                    ResultadoFio& r) {
+  Enlace::RemontaFoto rf;
+  Enlace::Receptor rx;
+  uint32_t ms = 1000;
+  rf.inicia(dest, tam, ms);
+
+  int pedido  = -1;  // deslocamento pedido que a camera ainda vai atender
+  bool acabou = false, pronta = false;
+  uint32_t desde = 0;
+  uint8_t q[Enlace::QUADRO_MAX];
+
+  auto trata = [&](Enlace::RemontaFoto::Acao a) {
+    if (a == Enlace::RemontaFoto::PEDE_REENVIO) {
+      // O pedido atravessa o mesmo fio, no sentido contrario.
+      const int sorte = (int)(sorteia() % 100);
+      if (sorte >= perdaPct) pedido = (int)rf.contiguo();  // chegou na camera
+    } else if (a == Enlace::RemontaFoto::PRONTA) {
+      acabou = pronta = true;
+    } else if (a == Enlace::RemontaFoto::FALHOU) {
+      acabou = true;
+    }
+  };
+  auto drena = [&]() {
+    Enlace::Quadro f;
+    while (rx.proximo(f)) {
+      if (f.tipo == Enlace::TIPO_FOTO_PEDACO) {
+        trata(rf.pedaco(Enlace::pega32(f.carga), f.carga + 4, f.n - 4, ms));
+      } else if (f.tipo == Enlace::TIPO_FOTO_FIM) {
+        trata(rf.fim(Enlace::pega32(f.carga), Enlace::pega16(f.carga + 4), ms));
+      }
+    }
+  };
+
+  for (int rodada = 0; rodada < 60 && !acabou; rodada++) {
+    // A camera transmite de 'desde' ate o FIM, sem parar no meio.
+    for (uint32_t d = desde; d < tam && !acabou; d += Enlace::FOTO_PEDACO_MAX) {
+      uint32_t k = tam - d;
+      if (k > Enlace::FOTO_PEDACO_MAX) k = Enlace::FOTO_PEDACO_MAX;
+      uint8_t c[Enlace::CARGA_MAX];
+      Enlace::poe32(c, d);
+      memcpy(c + 4, img + d, k);
+      const size_t t = Enlace::monta(Enlace::TIPO_FOTO_PEDACO, c, (uint8_t)(4 + k), q, sizeof(q));
+      passaPeloCanal(q, t, perdaPct, rx);
+      ms += 18;
+      drena();
+    }
+    if (!acabou) {
+      uint8_t c[Enlace::FOTO_FIM_BYTES];
+      Enlace::poe32(c, tam);
+      Enlace::poe16(c + 4, crcImg);
+      const size_t t = Enlace::monta(Enlace::TIPO_FOTO_FIM, c, sizeof(c), q, sizeof(q));
+      passaPeloCanal(q, t, perdaPct, rx);
+      ms += 18;
+      drena();
+    }
+    if (acabou) break;
+
+    if (pedido >= 0) {
+      desde  = (uint32_t)pedido;  // a camera atende o pedido que chegou
+      pedido = -1;
+      ms += 30;
+    } else {
+      ms += Enlace::RemontaFoto::ESPERA_MS + 100;  // silencio: o relogio corre
+      trata(rf.parado(ms));
+      if (!acabou && pedido >= 0) {
+        desde  = (uint32_t)pedido;
+        pedido = -1;
+      }
+    }
+  }
+
+  r.fotos++;
+  r.reenviosTotal += rf.reenvios();
+  if (rf.reenvios() > r.reenviosMax) r.reenviosMax = rf.reenvios();
+  if (pronta) {
+    if (memcmp(dest, img, tam) == 0) {
+      r.prontas++;
+    } else {
+      r.erradas++;  // o pior resultado possivel: foto errada entregue como boa
+    }
+  } else {
+    r.desistiu++;
+  }
+}
+
+static void testaRetransmissao() {
+  Serial.println(F("\n--- 1c. retransmissao da foto em fio ruim ---"));
+  const uint32_t TAM = 14000;  // o tamanho real das fotos da XIAO
+  uint8_t* img       = (uint8_t*)malloc(TAM);
+  uint8_t* dest      = (uint8_t*)malloc(TAM);
+  if (!img || !dest) {
+    confere("memoria para a retransmissao", false);
+    free(img);
+    free(dest);
+    return;
+  }
+  for (uint32_t i = 0; i < TAM; i++) img[i] = (uint8_t)(sorteia() >> 3);
+  const uint16_t crcImg = Enlace::crc16(img, TAM);
+
+  const int NIVEIS[] = {0, 2, 5, 10, 25, 50};  // % de quadros perdidos ou corrompidos
+  for (size_t i = 0; i < sizeof(NIVEIS) / sizeof(NIVEIS[0]); i++) {
+    ResultadoFio r  = {0, 0, 0, 0, 0, 0};
+    const int perda = NIVEIS[i];
+    for (int k = 0; k < 100; k++) umaFoto(img, TAM, crcImg, dest, perda, r);
+    Serial.printf(
+        "  fio com %2d%% de perda: %3d de %d fotos prontas, %d desistencias, %d erradas, "
+        "reenvios: media %.1f, maximo %lu\n",
+        perda, r.prontas, r.fotos, r.desistiu, r.erradas, (double)r.reenviosTotal / r.fotos,
+        (unsigned long)r.reenviosMax);
+
+    // Vale para qualquer nivel: foto errada nunca sai como boa.
+    char nome[80];
+    snprintf(nome, sizeof(nome), "%d%% de perda: nenhuma foto errada entregue", perda);
+    confere(nome, r.erradas == 0);
+
+    // Fio com o desempenho medido de verdade (~1%) e um pouco pior: fecha sempre.
+    if (perda <= 10) {
+      snprintf(nome, sizeof(nome), "%d%% de perda: as 100 fotos fecham", perda);
+      confere(nome, r.prontas == r.fotos);
+    }
+  }
+  free(img);
+  free(dest);
+}
+
 static void testaFoto() {
   Serial.println(F("\n--- 1b. foto pelo fio (protocolo v2) ---"));
 
@@ -543,6 +701,7 @@ static void roda() {
 
   testaEnlace();
   testaFoto();
+  testaRetransmissao();
 
   if (montaBanco()) {
     mede(Visao::PESOS_PADRAO, "4. acerto dos pesos ATUAIS (os que estao no firmware)");

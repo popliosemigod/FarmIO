@@ -122,7 +122,8 @@ reencontrar o preâmbulo, e o quadro corrompido morre no CRC.
 | `0x41` FOTO_INICIO | cam → vaso | tamanho u32, largura u16, altura u16, ms de captura u16 (10 B) |
 | `0x42` FOTO_PEDACO | cam → vaso | deslocamento u32 + até 196 bytes do JPEG |
 | `0x43` FOTO_FIM | cam → vaso | tamanho u32 + CRC16 do JPEG inteiro (6 B) |
-| `0x44` FOTO_ERRO | cam → vaso | código: 1 sem sensor, 2 captura falhou, 3 formato |
+| `0x44` FOTO_ERRO | cam → vaso | código: 1 sem sensor, 2 captura falhou, 3 formato, 4 sem cópia para reenviar |
+| `0x45` FOTO_REENVIA | vaso → cam | deslocamento u32 + tamanho total u32 (8 B): "reenvie a partir deste byte" |
 | `0x7F` LOG | cam → vaso | texto livre |
 
 **Versão 2, carga máxima de 200 bytes.** Com os 64 da v1, cada quadro de foto
@@ -156,6 +157,104 @@ arbitragem nenhuma, e é o que permite ao vaso saber que uma resposta que não v
 **`CONFIG` garante uma fonte só da verdade.** Os limiares vivem no `config.h` do
 vaso e são empurrados para a câmera quando o enlace sobe. Sem isso existiriam dois
 conjuntos de limiares no projeto, e um deles estaria sempre desatualizado.
+
+## Fio ruim: retransmissão da foto
+
+Em 21/09/2026, com o vaso e a câmera montados de verdade, a primeira rodada de
+fotos mostrou o que a bancada não mostrava: em 43 kB, **2 quadros com CRC ruim e
+381 bytes de lixo** — cerca de 1% de perda. Uma foto tem de 70 a 150 quadros, e a
+primeira versão descartava a foto inteira ao perder um. Na primeira rodada, uma das
+três fotos falhou.
+
+Duas correções, em camadas, e a ordem importa.
+
+**1. Retransmissão (o protocolo aguenta perda).** O vaso passou a guardar todo
+pedaço que chega, mesmo adiante de um buraco, num mapa de pedaços recebidos. Ao ver
+um buraco pede `FOTO_REENVIA` a partir do primeiro pedaço que falta; a câmera, que
+agora guarda a última foto numa cópia, reenvia dali até o fim. O que já estava no
+mapa chega repetido e é ignorado. Guardar o que veio depois do buraco importa:
+descartá-lo obrigava a reenviar o que já tinha chegado, e cada reenvio arrisca os
+mesmos quadros de novo.
+
+O pedido carrega o **tamanho total** da foto como trava: se a câmera já tirou
+outra, o tamanho não bate e ela recusa (erro 4) em vez de mandar pedaços de uma
+imagem para remendar outra. Silêncio de 1,2 s também vira pedido — isso cobre o
+`FIM` perdido e o próprio pedido perdido. Depois de 12 pedidos, desiste com o
+motivo. E o CRC do JPEG inteiro continua sendo o juiz final: se todos os quadros
+passaram no CRC deles e a imagem mesmo assim não fecha, recomeça do zero.
+
+A política vive na biblioteca (`RemontaFoto`, sem nada de Arduino), e não no
+`camera.h`, para o autoteste poder simular um fio ruim. Resultado, 100 fotos de
+14 kB por nível de perda, contra um canal que perde ou corrompe quadros — inclusive
+os pedidos de reenvio:
+
+| Perda de quadros | Fotos prontas | Fotos erradas entregues | Reenvios (média / máx.) |
+| --- | --- | --- | --- |
+| 0% | 100 de 100 | **0** | 0 / 0 |
+| 2% | 100 de 100 | **0** | 0,9 / 3 |
+| 5% | 100 de 100 | **0** | 1,4 / 3 |
+| 10% | 100 de 100 | **0** | 2,2 / 5 |
+| 25% | 100 de 100 | **0** | 4,4 / 10 |
+| 50% | 81 de 100 (19 desistem, com motivo) | **0** | 9,8 / 12 |
+
+A coluna do meio é a que vale: **em nenhum nível uma foto errada saiu como boa.**
+Fio ruim demais faz o vaso desistir e dizer por quê — nunca entregar imagem torta.
+
+**2. A causa (o fio deixa de perder).** A retransmissão trata o sintoma. Para achar
+a causa, o vaso passou a contar o que a própria UART reporta e o maior intervalo
+entre voltas do loop. Antes do ajuste, em 40 fotos: **4 estouros da FIFO de
+hardware**, 0 estouros do buffer de 4 kB e o loop nunca passando de 282 ms. O
+suspeito óbvio — o servidor web travando o loop — estava errado. O problema era
+mais baixo: a FIFO da UART tem 128 bytes, enche em 11 ms a 115200 bps, e o driver só
+a esvazia quando ela chega a 120. Sobra ~0,7 ms para atender a interrupção, e o C3
+tem um núcleo só, dividido com o Wi-Fi. Baixar o gatilho para 32 bytes
+(`ENLACE_FIFO_GATILHO`) dá ~8 ms de folga.
+
+| | Antes | Depois |
+| --- | --- | --- |
+| Estouros de FIFO | 4 em 40 fotos | **0 em 58 fotos** |
+| Quadros com CRC ruim | 6 | **0** |
+| Bytes de lixo | 1178 | **0** |
+| Fotos que precisaram de reenvio | de 3 em 30 a quase todas (pedidos a cada 1,6 s) | **0 de 58** |
+
+O reenvio continua lá como rede de segurança: fio de jumper em campo é fio de
+jumper em campo.
+
+## Diagnóstico do fio
+
+Quando a câmera "não aparece", o veredito sozinho não distingue quatro defeitos
+diferentes. Por isso o vaso conta o que chega, e o painel serial mostra:
+
+```
+fio: 43660 B recebidos (ultimo ha 4 s), 12 enviados | pong 1  veredito 7  foto 215  log 0
+recusados: 2 CRC, 0 versao, 0 tamanho, 381 B de lixo, 0 ecos
+uart: 4 estouros de FIFO, 0 de buffer, 0 de enquadramento  |  loop: maior volta 282 ms
+```
+
+| O que se vê | O que significa |
+| --- | --- |
+| `0 B recebidos` com vários enviados | nada volta: câmera sem energia, ou D0 fora do GPIO20 |
+| **`ecos` > 0** | o vaso está ouvindo os próprios quadros: **TX e RX ligados um no outro** |
+| B recebidos, mas `CRC` subindo | chega sinal com erro: fio ruim ou comprido |
+| `estouros de FIFO` | byte perdido porque o vaso demorou a atender a UART |
+
+**O eco é o defeito mais traiçoeiro**, e foi o que apareceu na primeira visita a
+campo. Um quadro válido chegando de volta fazia o vaso achar que o enlace estava de
+pé — sem veredito nenhum e sem uma única falha contada. Agora quadro que só o vaso
+envia (PING, pedidos, CONFIG, REENVIA) não prova que há câmera do outro lado, e o
+vaso avisa "ECO".
+
+O comando **`w`** no console do vaso faz o teste elétrico: solta a UART, mede o que
+há nos dois pinos e a reabre.
+
+| Resultado | Leitura |
+| --- | --- |
+| "o RX SEGUE o TX" | GPIO20 e GPIO21 estão ligados. Tire os fios da XIAO e repita: se continuar, o curto é do lado do C3 |
+| "fio limpo, e há alguém empurrando o RX" | a D0 da XIAO está alimentada e no GPIO20 — o estado bom |
+| "fio limpo, mas NINGUÉM empurra o RX" | XIAO sem energia, ou D0 fora do GPIO20 |
+
+A página do app mostra a mesma coisa na linha de detalhe da câmera, para quem está
+em campo sem monitor serial.
 
 ## Escada de recuperação
 
@@ -197,9 +296,12 @@ A varredura de bit é o número que importa: ela troca um bit de cada vez em cad
 posição do quadro de 19 bytes e confere que nenhum deles passa. Nenhum quadro
 corrompido vira veredito.
 
-**O que ainda não foi medido:** nada disso passou por fio de verdade. Taxa de erro
-real, comprimento máximo de jumper e comportamento com a câmera reiniciando de
-fato são ensaio de bancada, e entram no [diário](../diario.md) quando acontecerem.
+**Fio de verdade, 21/09/2026:** passou. 58 fotos seguidas de 640×480 (7 a 14 kB), 0
+reenvios, 0 quadros com CRC ruim, 0 bytes de lixo, em 444 kB recebidos — depois do
+ajuste do gatilho da FIFO, ver acima. Uma foto leva 0,7 a 1,3 s do pedido ao último
+byte. O que continua sem medida: comprimento máximo de jumper e a câmera reiniciando
+de fato no meio de uma foto. Números e a sequência completa no
+[diário](../diario.md).
 
 ## Gravar as duas placas
 

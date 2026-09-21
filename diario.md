@@ -76,6 +76,139 @@ real, o vaso irriga na hora errada — o firmware está correto, os números nã
 
 ---
 
+### 2026-09-21 (ensaio no celular) — O celular sozinho: os dois caminhos funcionam
+
+**Alvo:** provar que o vaso se usa em campo **sem o PC** — só o celular.
+
+**Montagem:** vaso com terra, as duas placas alimentadas e ligadas pelo fio, o
+celular (Galaxy A14) como único aparelho do lado de fora. Henrique fez o ensaio.
+
+| Caminho | Previsto | Medido |
+| --- | --- | --- |
+| 1 — rede própria `farmio-01`, `http://192.168.4.1` | página abre, foto chega | **funcionou** |
+| 2 — roteador do celular, vaso em `10.118.53.176` | página abre, foto chega | **funcionou** |
+
+Na tela do celular: 28,8 °C e 74,2% de umidade do ar, solo `EXTREM. BAIXA` com a
+terra seca — é a calibração parcial da noite reconhecendo a terra —, tanque 0%,
+alerta `SOLO MUITO SECO · TANQUE VAZIO`, câmera com 84 quadros e **0 falhas, 0
+resets**, e a foto na página.
+
+**O que a foto mostra, e que confirma o aviso da página:** a câmera diz "planta à
+vista, 100%" olhando uma bancada **sem planta nenhuma** — é o falso positivo de
+sempre, agora na tela do celular. O aviso "detecção não calibrada — confira pela
+foto" está lá, e a foto permite conferir. A visão continua sem mandar na bomba.
+
+**Evidência:** [`docs/img/app-no-celular.jpg`](docs/img/app-no-celular.jpg) e
+[`docs/img/vaso-montado.jpg`](docs/img/vaso-montado.jpg), no repositório.
+
+### 2026-09-21 (fim da noite) — Em campo a câmera não aparecia: um eco, um fio que perdia quadro e uma terra que não parava de mudar
+
+**Alvo:** depois da visita a campo, em que a câmera "não foi acessada de jeito
+nenhum", achar por que, consertar o método de comunicação com ela e, de quebra,
+calibrar a umidade — o vaso agora tem terra de verdade, recém-comprada e nunca
+molhada. O roteador do celular estava ligado, com o vaso já dentro dele
+(−55 a −64 dBm).
+
+**O que o painel mostrava ao chegar:** `0 quadros, 0 falhas` depois de 261 s. Sem
+enlace, o vaso deveria acumular falhas — na véspera, com o fio solto, chegou a 94.
+Zero falhas e zero quadros só fecha se algum quadro válido chega sem ser veredito
+e zera o prazo toda hora.
+
+**Defeito 1 — o eco escondia a falta da câmera.** O vaso tratava *qualquer* quadro
+válido como resposta. Instrumentado o fio (bytes recebidos, quadros por tipo, CRC,
+lixo), o resultado foi inequívoco: **3 quadros enviados (PING, 7 B cada), 21 bytes
+recebidos, todos válidos, nenhum da câmera.** O vaso ouvia os próprios quadros:
+GPIO20 (RX) e GPIO21 (TX) estavam ligados um ao outro. Um teste elétrico novo (`w`
+no console) confirmou: o RX seguia o TX, e com o TX solto nada empurrava o RX — a
+D0 da XIAO não estava entregando sinal.
+
+Correção de software: quadro que só o vaso envia (PING, pedidos, CONFIG, REENVIA)
+não conta como resposta. Passa a ser "SEM ENLACE" e a mensagem "ECO", que é o que
+tinha de ser desde o início. A correção do fio em si é física — e foi feita durante
+a sessão: no painel seguinte o enlace subiu (57 B recebidos, 0 ecos, 0 CRC ruim).
+
+**Defeito 2 — com o fio certo, a foto falhava.** Primeiras fotos pelo fio real:
+13,6 kB em 1,3 s, mas uma das três falhou ("pedaço perdido no fio"), e o receptor
+contava **2 CRC ruins e 381 bytes de lixo em 43 kB** (~1%). Com 70 a 150 quadros por
+foto, um quadro perdido derrubava a foto inteira.
+
+Correção: retransmissão. Quadro novo `FOTO_REENVIA`, a câmera guardando a última
+foto, o vaso guardando os pedaços fora de ordem num mapa e pedindo a partir do
+primeiro que falta. A política mora numa classe sem Arduino (`RemontaFoto`) para o
+autoteste poder simular um fio ruim. Duas coisas que o teste mostrou:
+
+- a primeira versão descartava o que vinha depois do buraco: com 5% de perda, 4 de
+  100 fotos desistiam; guardando o que chega, **100 de 100 fecham até 25%** e 81 de
+  100 ainda com 50%;
+- **em nenhum dos 600 casos simulados uma foto errada foi entregue como boa.**
+
+Um erro meu no caminho: o primeiro recorte que fiz do cabeçalho parou no `};` do
+`enum` que fica *dentro* da classe e deixou metade da classe antiga no arquivo. O
+compilador pegou na hora.
+
+**Defeito 3 — a causa do fio perder.** Com a retransmissão funcionando, 79 pedidos
+seguidos (1,6 s entre eles) deram 74 fotos, 0 falhas e **85 reenvios**: ainda perdia
+~1 quadro por foto. Em vez de supor, o vaso passou a contar os erros da UART e o
+maior intervalo do loop. Hipótese inicial, **errada**: o servidor web sincrono
+travando o loop e estourando o buffer de 4 kB. Medido: **maior volta de 282 ms, 0
+estouros de buffer — e 4 estouros da FIFO de hardware em 40 fotos.** A FIFO da UART
+tem 128 B, enche em 11 ms a 115200 bps, e o driver só a esvazia com 120: sobram
+~0,7 ms, num C3 de um núcleo só, dividido com o Wi-Fi. Gatilho baixado para 32 B.
+
+| | Antes | Depois |
+| --- | --- | --- |
+| Estouros de FIFO | 4 em 40 fotos | **0 em 58 fotos** |
+| Quadros com CRC ruim / lixo | 6 / 1178 B | **0 / 0 B** |
+| Fotos com reenvio | de 3 em 30 a quase todas | **0 de 58** |
+
+444 kB recebidos sem um erro.
+
+**A umidade — e um número que eu quase gravei errado.** Terra seca com o sensor
+cravado. Primeira leitura estável, 60 s: **2258**. Gravei `SOLO_SECO_ADC = 2200`.
+Minutos depois a mesma terra lia 2453; depois, 1738. Sequência da mesma terra, no
+mesmo sensor: **1249, 1494, 1648, 2053, 1970, 2235, 2258, 2408, 2453, 1738**. O
+sensor assenta e pula quando alguém mexe nele; um "estável" de 60 s não prova nada
+se ele ainda está sendo mexido. Descartei o 2200 antes de commitar.
+
+Ferramenta nova, `scripts/calibra_solo.py`, que só aceita a leitura depois de uma
+janela de 60 s com variação menor que 40. Com o sensor parado: **1734** (1729–1739,
+21 leituras). `SOLO_SECO_ADC = 1650`, ~5% abaixo, para o ruído e a acomodação da
+terra não trocarem a faixa; `BAIXO` = 1538 e `ALTO` = 1312 derivados.
+
+**E a leitura ainda descia.** Depois de regravar o firmware, a mesma terra, com o
+sensor parado, lia 1685: 1747 → 1734 → 1685 em cerca de 20 minutos. O ponto seco
+ainda está assentando, e o limiar de 1650 já está perto dele — se a leitura seca
+cair abaixo dele, a terra seca deixa de ser "extremamente baixa" e a irrigação
+não dispara. Refazer com o `calibra_solo.py` depois de algumas horas com o sensor
+parado, antes de confiar.
+
+**Calibração parcial, e isso está dito no código.** Só o ponto seco é medido. O
+molhado (`SOLO_ENCHARCADO_ADC = 1200`) continua chute, porque a terra nunca foi
+molhada. O firmware agora reconhece terra seca como seca; o que não se sabe é onde
+ela deixa de ser seca. **Não afirmar que a irrigação está correta antes do ponto
+molhado.**
+
+**Ensaiado:**
+
+| Verificação | Resultado |
+| --- | --- |
+| autoteste completo | 0 falhas, incluindo a retransmissão em 6 níveis de perda |
+| foto pelo fio, ritmo de 2,2 s | 58 de 58, 0 reenvios |
+| solo lido como faixa | terra seca lê `EXTREM. BAIXA` e levanta `SOLO MUITO SECO` |
+| JSON de `/sensores` | 775 B de 1400 |
+
+**Não ensaiado — e é o que o pedido mais queria:**
+
+- **a captura pela rede do celular de verdade.** O vaso estava dentro do roteador
+  (`10.118.53.x`), mas o PC não, e não tirei o PC da rede dele. O caminho HTTP foi
+  provado no ensaio anterior com o roteador emulado; a câmera e o fio, hoje, pela
+  serial. Falta apertar o botão no celular;
+- a bomba girando (tanque vazio) e o ponto molhado do solo;
+- a qualidade da imagem: as fotos saíram escuras e a visão segue **não calibrada**.
+
+**Evidência:** saídas de painel e dos testes citadas acima; `scripts/calibra_solo.py`
+para repetir a medição do solo.
+
 ### 2026-09-21 (noite) — Ensaio de campo com o roteador emulado: dois defeitos que a bancada não mostrava
 
 **Alvo:** provar que o vaso funciona do jeito que vai a campo — só o roteador de um

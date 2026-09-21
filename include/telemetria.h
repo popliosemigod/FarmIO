@@ -72,6 +72,7 @@ inline void ajuda() {
   Serial.println(F("    r  repete agora"));
   Serial.println(F("    z  zera os contadores de bomba e camera"));
   Serial.println(F("    p  pinagem e limiares em uso"));
+  Serial.println(F("    w  teste eletrico do fio da camera (TX/RX em curto? XIAO viva?)"));
   Serial.println(F("  ensaio de bancada:"));
   Serial.println(F("    f  pede uma foto a camera"));
   Serial.println(F("    +  liga a bomba como o app liga - desliga sozinha em 6 s"));
@@ -174,14 +175,42 @@ inline void bloco() {
   }
   Serial.printf("            %u quadros, %u falhas, %u resets  |  UART1 RX=%d TX=%d\n", V.quadros,
                 V.falhas, V.resets, PIN_CAM_RX, PIN_CAM_TX);
+  {
+    const Camera::Fio& fi        = Camera::fio();
+    const Enlace::Contadores& ct = Camera::receptor().contadores();
+    Serial.printf("            fio: %lu B recebidos", (unsigned long)fi.bytes);
+    if (fi.bytes) {
+      Serial.printf(" (ultimo ha %lu s)", (unsigned long)((millis() - fi.ultimoByteEm) / 1000UL));
+    }
+    Serial.printf(", %lu enviados | pong %lu  veredito %lu  foto %lu  log %lu\n",
+                  (unsigned long)fi.enviados, (unsigned long)fi.pong, (unsigned long)fi.veredito,
+                  (unsigned long)fi.fotoQuadros, (unsigned long)fi.logs);
+    Serial.printf(
+        "            recusados: %lu CRC, %lu versao, %lu tamanho, %lu B de lixo, %lu ecos\n",
+        (unsigned long)ct.crcErrado, (unsigned long)ct.versaoErrada,
+        (unsigned long)ct.tamanhoErrado, (unsigned long)ct.bytesDescartados,
+        (unsigned long)fi.ecos);
+    Serial.printf(
+        "            uart: %lu estouros de FIFO, %lu de buffer, %lu de enquadramento  |  "
+        "loop: maior volta %lu ms\n",
+        (unsigned long)fi.errFifo, (unsigned long)fi.errBuffer, (unsigned long)fi.errQuadro,
+        (unsigned long)fi.maiorVoltaMs);
+    if (fi.bytes == 0 && fi.enviados > 2) {
+      Serial.println(
+          F("            >>> NADA chegou pelo RX: camera sem energia, ou D0 nao esta no GPIO20"));
+    } else if (fi.ecos > 0) {
+      Serial.println(F("            >>> ECO: TX e RX do vaso estao ligados um no outro"));
+    }
+  }
   if (V.enlaceOk) {
     Serial.printf("            verde na cena: %u%%   ultimo quadro levou %u ms\n", V.cobertura / 10,
                   V.msCamera);
   }
   const Camera::Foto& f = Camera::foto();
   if (f.estado == Camera::FOTO_PRONTA) {
-    Serial.printf("            foto %lu: %ux%u, %lu B, %lu ms pelo fio\n", (unsigned long)f.numero,
-                  f.largura, f.altura, (unsigned long)f.total, (unsigned long)f.duracaoMs);
+    Serial.printf("            foto %lu: %ux%u, %lu B, %lu ms pelo fio, %u reenvios\n",
+                  (unsigned long)f.numero, f.largura, f.altura, (unsigned long)f.total,
+                  (unsigned long)f.duracaoMs, f.reenvios);
   } else if (f.estado == Camera::FOTO_ERRO) {
     Serial.printf("            ultima foto falhou: %s\n", f.erro);
   } else if (Camera::fotoEmCurso()) {
@@ -295,11 +324,14 @@ inline void comandos() {
         break;
       case 'r': imprimeAgora(); break;
       case 'p': pinagem(); break;
+      case 'w': Camera::testeDoFio(); break;
       case 'z':
         B.pulsos       = 0;
         B.tempoTotalMs = 0;
         L.dhtFalhas    = 0;
         V.quadros = V.falhas = V.resets = 0;
+        Camera::fio().maiorVoltaMs      = 0;
+        Camera::fio().errFifo = Camera::fio().errBuffer = Camera::fio().errQuadro = 0;
         Serial.println(F("  contadores zerados."));
         break;
       case 'f': {
