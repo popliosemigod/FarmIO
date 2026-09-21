@@ -76,6 +76,31 @@ real, o vaso irriga na hora errada — o firmware está correto, os números nã
 
 ---
 
+### 2026-09-21 (ensaio no celular) — O celular sozinho: os dois caminhos funcionam
+
+**Alvo:** provar que o vaso se usa em campo **sem o PC** — só o celular.
+
+**Montagem:** vaso com terra, as duas placas alimentadas e ligadas pelo fio, o
+celular (Galaxy A14) como único aparelho do lado de fora. Henrique fez o ensaio.
+
+| Caminho | Previsto | Medido |
+| --- | --- | --- |
+| 1 — rede própria `farmio-01`, `http://192.168.4.1` | página abre, foto chega | **funcionou** |
+| 2 — roteador do celular, vaso em `10.118.53.176` | página abre, foto chega | **funcionou** |
+
+Na tela do celular: 28,8 °C e 74,2% de umidade do ar, solo `EXTREM. BAIXA` com a
+terra seca — é a calibração parcial da noite reconhecendo a terra —, tanque 0%,
+alerta `SOLO MUITO SECO · TANQUE VAZIO`, câmera com 84 quadros e **0 falhas, 0
+resets**, e a foto na página.
+
+**O que a foto mostra, e que confirma o aviso da página:** a câmera diz "planta à
+vista, 100%" olhando uma bancada **sem planta nenhuma** — é o falso positivo de
+sempre, agora na tela do celular. O aviso "detecção não calibrada — confira pela
+foto" está lá, e a foto permite conferir. A visão continua sem mandar na bomba.
+
+**Evidência:** [`docs/img/app-no-celular.jpg`](docs/img/app-no-celular.jpg) e
+[`docs/img/vaso-montado.jpg`](docs/img/vaso-montado.jpg), no repositório.
+
 ### 2026-09-21 (fim da noite) — Em campo a câmera não aparecia: um eco, um fio que perdia quadro e uma terra que não parava de mudar
 
 **Alvo:** depois da visita a campo, em que a câmera "não foi acessada de jeito
