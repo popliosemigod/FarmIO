@@ -47,3 +47,9 @@ desktop.ini
 ehthumbs.db
 *.tmp
 *.log
+
+# ---- Save devido ----
+# CONTEXTO.md guarda pesquisa, ensaios, medicoes brutas, erros e becos sem
+# saida. O git guarda o que ficou decidido; o CONTEXTO.md guarda como se
+# chegou la. Convencao em Jaspy/docs/09-save-devido.md.
+CONTEXTO.md

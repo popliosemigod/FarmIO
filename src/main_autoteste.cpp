@@ -1,0 +1,749 @@
+// =====================================================================
+//  FarmIO - main_autoteste.cpp
+//  Bancada de ensaio que roda DENTRO da placa, sem sensor, sem camera e
+//  sem fio nenhum ligado. Faz tres coisas:
+//
+//    1. exercita o protocolo do enlace contra os quatro modos de falha
+//       que ele vai encontrar de verdade no fio;
+//    2. gera o banco de cenas sinteticas, extrai as nove caracteristicas
+//       e TREINA a regressao logistica na propria placa;
+//    3. mede acerto, tempo por quadro e imprime os pesos prontos para
+//       colar em lib/farmio_visao/pesos.cpp.
+//
+//  POR QUE TREINAR NA PLACA E NAO NO PC. Porque nao ha compilador de
+//  host nesta maquina, e porque treinar onde se executa elimina de uma
+//  vez a classe de erro mais chata deste tipo de trabalho: o modelo que
+//  acerta no notebook e erra no microcontrolador porque a extracao de
+//  caracteristica divergiu entre as duas implementacoes. Aqui so existe
+//  uma implementacao, e e a que vai para o campo.
+//
+//  Gravar e ler:
+//      pio run -e autoteste -t upload
+//      pio device monitor -e autoteste
+// =====================================================================
+#include <Arduino.h>
+
+#include "farmio_enlace.h"
+#include "farmio_visao.h"
+#include "cenas.h"
+
+// Sementes por tipo de cena. As primeiras SEMENTES_TREINO vao para o
+// treino, o resto e reservado para a medida - misturar os dois daria um
+// numero bonito e mentiroso.
+static const int SEMENTES_TOTAL  = 24;
+static const int SEMENTES_TREINO = 16;
+
+static const int MAX_AMOSTRAS = Cenas::N_TIPOS * SEMENTES_TOTAL;
+
+struct Amostra {
+  int16_t x[Visao::N_CARACTERISTICAS];  // Q8
+  uint8_t tipo;
+  uint8_t rotulo;  // 0 ou 1
+  bool treino;
+};
+
+static Amostra* g_banco       = nullptr;
+static int g_n                = 0;
+static uint32_t g_usPorQuadro = 0;
+
+// ---------------------------------------------------------------------
+//  1. Enlace
+// ---------------------------------------------------------------------
+static int g_falhas = 0;
+
+static void confere(const char* nome, bool ok) {
+  Serial.printf("  [%s] %s\n", ok ? "ok " : "FALHOU", nome);
+  if (!ok) g_falhas++;
+}
+
+static void testaEnlace() {
+  Serial.println(F("\n--- 1. enlace serial C3 <-> ESP32-CAM ---"));
+
+  uint8_t quadro[Enlace::QUADRO_MAX];
+  Enlace::Receptor rec;
+  Enlace::Quadro q;
+
+  // Ida e volta de um veredito completo.
+  Enlace::CargaVeredito v;
+  v.probabilidade  = 873;
+  v.cobertura      = 642;
+  v.exgMedio       = 151;
+  v.maiorRegiaoPct = 62;
+  v.clusters       = 3;
+  v.ms             = 41;
+  v.classe         = Visao::PLANTA;
+  v.flags          = 0;
+
+  uint8_t carga[Enlace::VEREDITO_BYTES];
+  Enlace::serializa(v, carga);
+  size_t n =
+      Enlace::monta(Enlace::TIPO_VEREDITO, carga, Enlace::VEREDITO_BYTES, quadro, sizeof(quadro));
+  confere("monta quadro de veredito", n == (size_t)(Enlace::CABECALHO + 12 + 2));
+
+  for (size_t i = 0; i < n; i++) rec.empurra(quadro[i]);
+  bool veio = rec.proximo(q);
+  Enlace::CargaVeredito v2;
+  memset(&v2, 0, sizeof(v2));
+  const bool iguais = veio && q.tipo == Enlace::TIPO_VEREDITO &&
+                      Enlace::desserializa(q.carga, q.n, v2) &&
+                      v2.probabilidade == v.probabilidade && v2.cobertura == v.cobertura &&
+                      v2.exgMedio == v.exgMedio && v2.classe == v.classe && v2.ms == v.ms;
+  confere("veredito volta identico byte a byte", iguais);
+
+  // Lixo antes do quadro: e o log de boot da ROM da ESP32-CAM, que cai
+  // no mesmo par de fios toda vez que ela reinicia.
+  rec.reinicia();
+  uint32_t s = 12345;
+  for (int i = 0; i < 300; i++) {
+    s = s * 1103515245u + 12345u;
+    rec.empurra((uint8_t)(s >> 16));
+  }
+  for (size_t i = 0; i < n; i++) rec.empurra(quadro[i]);
+  confere("acha o quadro depois de 300 bytes de lixo", rec.proximo(q));
+
+  // Preambulo falso no meio do lixo: 0xA5 0x5A aparece por acaso a cada
+  // 65 mil bytes, e sem recuperacao o receptor engoliria o quadro bom.
+  rec.reinicia();
+  rec.empurra(0xA5);
+  rec.empurra(0x5A);
+  rec.empurra(Enlace::VERSAO);
+  rec.empurra(0x11);
+  rec.empurra(0x0C);  // promete 12 bytes que nunca vem inteiros
+  for (int i = 0; i < 5; i++) rec.empurra(0xFF);
+  for (size_t i = 0; i < n; i++) rec.empurra(quadro[i]);
+  confere("recupera de preambulo falso", rec.proximo(q) && q.tipo == Enlace::TIPO_VEREDITO);
+
+  // Um bit trocado tem de morrer no CRC, e nao virar decisao de irrigar.
+  rec.reinicia();
+  uint8_t sujo[Enlace::QUADRO_MAX];
+  memcpy(sujo, quadro, n);
+  sujo[7] ^= 0x08;
+  for (size_t i = 0; i < n; i++) rec.empurra(sujo[i]);
+  const bool passou = rec.proximo(q);
+  confere("quadro com um bit trocado e recusado", !passou);
+
+  // Dois quadros colados: um unico proximo() nao pode perder o segundo.
+  rec.reinicia();
+  for (size_t i = 0; i < n; i++) rec.empurra(quadro[i]);
+  for (size_t i = 0; i < n; i++) rec.empurra(quadro[i]);
+  const bool dois = rec.proximo(q) && rec.proximo(q) && !rec.proximo(q);
+  confere("dois quadros colados saem os dois", dois);
+
+  // Varredura: um bit trocado em qualquer posicao do quadro.
+  int recusados = 0, total = 0;
+  for (size_t i = 0; i < n; i++) {
+    for (int b = 0; b < 8; b++) {
+      Enlace::Receptor rr;
+      memcpy(sujo, quadro, n);
+      sujo[i] ^= (uint8_t)(1 << b);
+      for (size_t k = 0; k < n; k++) rr.empurra(sujo[k]);
+      Enlace::Quadro qq;
+      total++;
+      if (!rr.proximo(qq)) recusados++;
+    }
+  }
+  Serial.printf("  varredura de bit unico: %d de %d recusados (%.1f%%)\n", recusados, total,
+                100.0 * recusados / total);
+  confere("nenhum quadro de um bit trocado passa", recusados == total);
+
+  const Enlace::Contadores& c = rec.contadores();
+  Serial.printf("  contadores: ok=%lu crc=%lu lixo=%lu\n", (unsigned long)c.quadrosOk,
+                (unsigned long)c.crcErrado, (unsigned long)c.bytesDescartados);
+}
+
+// ---------------------------------------------------------------------
+//  1b. Foto pelo fio
+//
+//  A camera nao esta ligada na bancada, entao o que se ensaia aqui e o
+//  protocolo: o quadro de 200 bytes que a versao 2 trouxe, e a conta dos
+//  deslocamentos. A mesma aritmetica da camera (fatiar) e do vaso
+//  (remontar e conferir) roda de ponta a ponta sobre um "JPEG" sintetico.
+// ---------------------------------------------------------------------
+// ---------------------------------------------------------------------
+//  1c. Retransmissao da foto contra um fio ruim
+//
+//  O fio de verdade perdeu ~1% dos quadros (medido em 21/09/2026). Aqui o
+//  canal e simulado com perda muito maior, e o que se cobra e a PROPRIEDADE
+//  que importa: a foto que o vaso entrega e SEMPRE identica a que a camera
+//  guardou - ou o vaso desiste com motivo. Nunca uma foto errada.
+//
+//  A camera simulada e a do main_cam.cpp: guarda a foto, transmite de um
+//  byte ate o FIM, e so atende um pedido depois de terminar a rajada.
+// ---------------------------------------------------------------------
+struct ResultadoFio {
+  int fotos, prontas, desistiu, erradas;
+  uint32_t reenviosTotal, reenviosMax;
+};
+
+static uint32_t g_semente = 20260921u;
+static uint32_t sorteia() {
+  g_semente = g_semente * 1664525u + 1013904223u;
+  return g_semente >> 8;
+}
+
+// Passa um quadro pelo canal: some inteiro, tem um bit trocado, ou passa.
+static void passaPeloCanal(const uint8_t* q, size_t n, int perdaPct, Enlace::Receptor& rx) {
+  const int sorte = (int)(sorteia() % 100);
+  if (sorte < perdaPct / 2) return;  // quadro que nunca chegou
+  uint8_t sujo[Enlace::QUADRO_MAX];
+  memcpy(sujo, q, n);
+  if (sorte < perdaPct) sujo[sorteia() % n] ^= (uint8_t)(1u << (sorteia() % 8));
+  for (size_t i = 0; i < n; i++) rx.empurra(sujo[i]);
+}
+
+static void umaFoto(const uint8_t* img, uint32_t tam, uint16_t crcImg, uint8_t* dest, int perdaPct,
+                    ResultadoFio& r) {
+  Enlace::RemontaFoto rf;
+  Enlace::Receptor rx;
+  uint32_t ms = 1000;
+  rf.inicia(dest, tam, ms);
+
+  int pedido  = -1;  // deslocamento pedido que a camera ainda vai atender
+  bool acabou = false, pronta = false;
+  uint32_t desde = 0;
+  uint8_t q[Enlace::QUADRO_MAX];
+
+  auto trata = [&](Enlace::RemontaFoto::Acao a) {
+    if (a == Enlace::RemontaFoto::PEDE_REENVIO) {
+      // O pedido atravessa o mesmo fio, no sentido contrario.
+      const int sorte = (int)(sorteia() % 100);
+      if (sorte >= perdaPct) pedido = (int)rf.contiguo();  // chegou na camera
+    } else if (a == Enlace::RemontaFoto::PRONTA) {
+      acabou = pronta = true;
+    } else if (a == Enlace::RemontaFoto::FALHOU) {
+      acabou = true;
+    }
+  };
+  auto drena = [&]() {
+    Enlace::Quadro f;
+    while (rx.proximo(f)) {
+      if (f.tipo == Enlace::TIPO_FOTO_PEDACO) {
+        trata(rf.pedaco(Enlace::pega32(f.carga), f.carga + 4, f.n - 4, ms));
+      } else if (f.tipo == Enlace::TIPO_FOTO_FIM) {
+        trata(rf.fim(Enlace::pega32(f.carga), Enlace::pega16(f.carga + 4), ms));
+      }
+    }
+  };
+
+  for (int rodada = 0; rodada < 60 && !acabou; rodada++) {
+    // A camera transmite de 'desde' ate o FIM, sem parar no meio.
+    for (uint32_t d = desde; d < tam && !acabou; d += Enlace::FOTO_PEDACO_MAX) {
+      uint32_t k = tam - d;
+      if (k > Enlace::FOTO_PEDACO_MAX) k = Enlace::FOTO_PEDACO_MAX;
+      uint8_t c[Enlace::CARGA_MAX];
+      Enlace::poe32(c, d);
+      memcpy(c + 4, img + d, k);
+      const size_t t = Enlace::monta(Enlace::TIPO_FOTO_PEDACO, c, (uint8_t)(4 + k), q, sizeof(q));
+      passaPeloCanal(q, t, perdaPct, rx);
+      ms += 18;
+      drena();
+    }
+    if (!acabou) {
+      uint8_t c[Enlace::FOTO_FIM_BYTES];
+      Enlace::poe32(c, tam);
+      Enlace::poe16(c + 4, crcImg);
+      const size_t t = Enlace::monta(Enlace::TIPO_FOTO_FIM, c, sizeof(c), q, sizeof(q));
+      passaPeloCanal(q, t, perdaPct, rx);
+      ms += 18;
+      drena();
+    }
+    if (acabou) break;
+
+    if (pedido >= 0) {
+      desde  = (uint32_t)pedido;  // a camera atende o pedido que chegou
+      pedido = -1;
+      ms += 30;
+    } else {
+      ms += Enlace::RemontaFoto::ESPERA_MS + 100;  // silencio: o relogio corre
+      trata(rf.parado(ms));
+      if (!acabou && pedido >= 0) {
+        desde  = (uint32_t)pedido;
+        pedido = -1;
+      }
+    }
+  }
+
+  r.fotos++;
+  r.reenviosTotal += rf.reenvios();
+  if (rf.reenvios() > r.reenviosMax) r.reenviosMax = rf.reenvios();
+  if (pronta) {
+    if (memcmp(dest, img, tam) == 0) {
+      r.prontas++;
+    } else {
+      r.erradas++;  // o pior resultado possivel: foto errada entregue como boa
+    }
+  } else {
+    r.desistiu++;
+  }
+}
+
+static void testaRetransmissao() {
+  Serial.println(F("\n--- 1c. retransmissao da foto em fio ruim ---"));
+  const uint32_t TAM = 14000;  // o tamanho real das fotos da XIAO
+  uint8_t* img       = (uint8_t*)malloc(TAM);
+  uint8_t* dest      = (uint8_t*)malloc(TAM);
+  if (!img || !dest) {
+    confere("memoria para a retransmissao", false);
+    free(img);
+    free(dest);
+    return;
+  }
+  for (uint32_t i = 0; i < TAM; i++) img[i] = (uint8_t)(sorteia() >> 3);
+  const uint16_t crcImg = Enlace::crc16(img, TAM);
+
+  const int NIVEIS[] = {0, 2, 5, 10, 25, 50};  // % de quadros perdidos ou corrompidos
+  for (size_t i = 0; i < sizeof(NIVEIS) / sizeof(NIVEIS[0]); i++) {
+    ResultadoFio r  = {0, 0, 0, 0, 0, 0};
+    const int perda = NIVEIS[i];
+    for (int k = 0; k < 100; k++) umaFoto(img, TAM, crcImg, dest, perda, r);
+    Serial.printf(
+        "  fio com %2d%% de perda: %3d de %d fotos prontas, %d desistencias, %d erradas, "
+        "reenvios: media %.1f, maximo %lu\n",
+        perda, r.prontas, r.fotos, r.desistiu, r.erradas, (double)r.reenviosTotal / r.fotos,
+        (unsigned long)r.reenviosMax);
+
+    // Vale para qualquer nivel: foto errada nunca sai como boa.
+    char nome[80];
+    snprintf(nome, sizeof(nome), "%d%% de perda: nenhuma foto errada entregue", perda);
+    confere(nome, r.erradas == 0);
+
+    // Fio com o desempenho medido de verdade (~1%) e um pouco pior: fecha sempre.
+    if (perda <= 10) {
+      snprintf(nome, sizeof(nome), "%d%% de perda: as 100 fotos fecham", perda);
+      confere(nome, r.prontas == r.fotos);
+    }
+  }
+  free(img);
+  free(dest);
+}
+
+static void testaFoto() {
+  Serial.println(F("\n--- 1b. foto pelo fio (protocolo v2) ---"));
+
+  // Quadro de carga maxima: e o tamanho novo, e o que mais importa cobrir.
+  uint8_t carga[Enlace::CARGA_MAX];
+  for (int i = 0; i < Enlace::CARGA_MAX; i++) carga[i] = (uint8_t)(i * 37 + 11);
+  uint8_t quadro[Enlace::QUADRO_MAX];
+  const size_t n =
+      Enlace::monta(Enlace::TIPO_FOTO_PEDACO, carga, Enlace::CARGA_MAX, quadro, sizeof(quadro));
+  confere("monta quadro de 200 bytes de carga", n == (size_t)Enlace::QUADRO_MAX);
+
+  Enlace::Receptor rec;
+  Enlace::Quadro q;
+  for (size_t i = 0; i < n; i++) rec.empurra(quadro[i]);
+  const bool volta = rec.proximo(q) && q.n == Enlace::CARGA_MAX && memcmp(q.carga, carga, q.n) == 0;
+  confere("quadro de 200 bytes volta identico", volta);
+
+  // Varredura de bit unico no quadro GRANDE: o CRC16 tem de pegar todos
+  // tambem com 207 bytes, nao so com os 19 do veredito.
+  uint8_t sujo[Enlace::QUADRO_MAX];
+  int recusados = 0, total = 0;
+  for (size_t i = 0; i < n; i++) {
+    for (int b = 0; b < 8; b++) {
+      Enlace::Receptor rr;
+      memcpy(sujo, quadro, n);
+      sujo[i] ^= (uint8_t)(1 << b);
+      for (size_t k = 0; k < n; k++) rr.empurra(sujo[k]);
+      Enlace::Quadro qq;
+      total++;
+      if (!rr.proximo(qq)) recusados++;
+    }
+  }
+  Serial.printf("  varredura de bit unico no quadro de 207 B: %d de %d recusados\n", recusados,
+                total);
+  confere("nenhum quadro grande de um bit trocado passa", recusados == total);
+
+  // Uma foto de ponta a ponta: fatia como a camera, remonta como o vaso.
+  const uint32_t TAM = 5000;  // nao multiplo de 196, para exercitar o ultimo pedaco
+  uint8_t* img       = (uint8_t*)malloc(TAM);
+  uint8_t* dest      = (uint8_t*)malloc(TAM);
+  if (!img || !dest) {
+    confere("memoria para a foto sintetica", false);
+    free(img);
+    free(dest);
+    return;
+  }
+  uint32_t sem = 777;
+  for (uint32_t i = 0; i < TAM; i++) {
+    sem    = sem * 1103515245u + 12345u;
+    img[i] = (uint8_t)(sem >> 16);
+  }
+  const uint16_t crcImg = Enlace::crc16(img, TAM);
+
+  // pulaPedaco < 0: transferencia limpa. >= 0: aquele pedaco "morre no fio".
+  for (int pulaPedaco = -1; pulaPedaco <= 3; pulaPedaco += 4) {
+    Enlace::Receptor r;
+    uint32_t recebido = 0;
+    bool buraco = false, fimOk = false;
+    int pedacos = 0;
+
+    for (uint32_t desloc = 0; desloc < TAM; desloc += Enlace::FOTO_PEDACO_MAX) {
+      uint32_t k = TAM - desloc;
+      if (k > Enlace::FOTO_PEDACO_MAX) k = Enlace::FOTO_PEDACO_MAX;
+      uint8_t c[Enlace::CARGA_MAX];
+      Enlace::poe32(c, desloc);
+      memcpy(c + 4, img + desloc, k);
+      const size_t t =
+          Enlace::monta(Enlace::TIPO_FOTO_PEDACO, c, (uint8_t)(4 + k), quadro, sizeof(quadro));
+      if (pedacos++ == pulaPedaco) continue;  // este nunca chega
+      for (size_t i = 0; i < t; i++) r.empurra(quadro[i]);
+      Enlace::Quadro qq;
+      while (r.proximo(qq)) {
+        const uint32_t d = Enlace::pega32(qq.carga);
+        if (d != recebido) {  // a mesma regra do vaso: fora de ordem e buraco
+          buraco = true;
+          continue;
+        }
+        memcpy(dest + recebido, qq.carga + 4, qq.n - 4);
+        recebido += qq.n - 4;
+      }
+    }
+    fimOk = !buraco && recebido == TAM && Enlace::crc16(dest, TAM) == crcImg;
+
+    if (pulaPedaco < 0) {
+      Serial.printf("  foto de %lu B em %d pedacos: %lu B remontados\n", (unsigned long)TAM,
+                    pedacos, (unsigned long)recebido);
+      confere("foto limpa remonta byte a byte e bate o CRC", fimOk);
+    } else {
+      confere("pedaco perdido e detectado, nao remendado", buraco && !fimOk);
+    }
+  }
+  // Rajada: a foto inteira de uma vez, como chega de verdade quando o
+  // loop do vaso esta ocupado com HTTP. Primeiro do jeito certo (esvazia a
+  // cada byte), depois do jeito que existia ate 21/09/2026 (empurra tudo,
+  // esvazia no fim) - que TEM que perder, senao o teste nao prova nada.
+  for (int jeito = 0; jeito < 2; jeito++) {
+    Enlace::Receptor r;
+    uint32_t recebido = 0;
+    bool buraco       = false;
+    uint8_t* rajada   = (uint8_t*)malloc(TAM + TAM / 8 + 64);
+    size_t nr         = 0;
+    for (uint32_t desloc = 0; desloc < TAM; desloc += Enlace::FOTO_PEDACO_MAX) {
+      uint32_t k = TAM - desloc;
+      if (k > Enlace::FOTO_PEDACO_MAX) k = Enlace::FOTO_PEDACO_MAX;
+      uint8_t c[Enlace::CARGA_MAX];
+      Enlace::poe32(c, desloc);
+      memcpy(c + 4, img + desloc, k);
+      nr += Enlace::monta(Enlace::TIPO_FOTO_PEDACO, c, (uint8_t)(4 + k), rajada + nr,
+                          Enlace::QUADRO_MAX);
+    }
+    Enlace::Quadro qq;
+    auto consome = [&]() {
+      while (r.proximo(qq)) {
+        if (Enlace::pega32(qq.carga) != recebido) {
+          buraco = true;
+          continue;
+        }
+        memcpy(dest + recebido, qq.carga + 4, qq.n - 4);
+        recebido += qq.n - 4;
+      }
+    };
+    for (size_t i = 0; i < nr; i++) {
+      r.empurra(rajada[i]);
+      if (jeito == 0) consome();
+    }
+    consome();
+    free(rajada);
+    const bool inteira = !buraco && recebido == TAM && Enlace::crc16(dest, TAM) == crcImg;
+    if (jeito == 0) {
+      Serial.printf("  rajada de %u B: %lu B remontados\n", (unsigned)nr, (unsigned long)recebido);
+      confere("foto em rajada remonta esvaziando a cada byte", inteira);
+    } else {
+      confere("empurrar a rajada toda antes de esvaziar perde quadro", !inteira);
+    }
+  }
+
+  free(img);
+  free(dest);
+}
+
+// ---------------------------------------------------------------------
+//  2. Banco de cenas -> caracteristicas
+// ---------------------------------------------------------------------
+static bool montaBanco() {
+  Serial.println(F("\n--- 2. banco de cenas sinteticas ---"));
+
+  uint8_t* quadro = (uint8_t*)malloc(Cenas::BYTES);
+  if (!quadro) {
+    Serial.println(F("  sem RAM para o quadro"));
+    return false;
+  }
+  g_banco = (Amostra*)calloc(MAX_AMOSTRAS, sizeof(Amostra));
+  if (!g_banco) {
+    free(quadro);
+    Serial.println(F("  sem RAM para o banco"));
+    return false;
+  }
+
+  const Visao::Parametros par = Visao::Parametros::padrao();
+  uint32_t somaUs             = 0;
+  uint32_t quadros            = 0;
+  g_n                         = 0;
+
+  for (uint8_t t = 0; t < Cenas::N_TIPOS; t++) {
+    const uint8_t rot = Cenas::rotulo(t);
+    // Medias por tipo, so para poder olhar a tabela e entender o modelo.
+    uint32_t soma[Visao::N_CARACTERISTICAS];
+    memset(soma, 0, sizeof(soma));
+    int usados = 0;
+
+    for (int s = 0; s < SEMENTES_TOTAL; s++) {
+      Cenas::desenha(t, (uint32_t)(t * 7919 + s * 104729 + 1), quadro);
+
+      Visao::Caracteristicas c;
+      const uint32_t t0 = micros();
+      const bool ok     = Visao::extrai(quadro, Cenas::LARGURA, Cenas::ALTURA, 2, true, par, c);
+      somaUs += micros() - t0;
+      quadros++;
+      if (!ok) continue;
+
+      Amostra& a = g_banco[g_n];
+      Visao::normaliza(c, a.x);
+      a.tipo   = t;
+      a.rotulo = rot;
+      a.treino = (s < SEMENTES_TREINO);
+      for (int i = 0; i < Visao::N_CARACTERISTICAS; i++) soma[i] += (uint32_t)a.x[i];
+      usados++;
+      if (rot != 255) g_n++;  // cena escura entra na tabela, nao no treino
+    }
+
+    if (usados) {
+      Serial.printf("  %-20s r=%-3d ", Cenas::nome(t), rot == 255 ? -1 : rot);
+      for (int i = 0; i < Visao::N_CARACTERISTICAS; i++) {
+        Serial.printf("%4d ", (int)(soma[i] / usados));
+      }
+      Serial.println();
+    }
+  }
+
+  g_usPorQuadro = quadros ? somaUs / quadros : 0;
+  Serial.println(
+      F("  colunas: cobert exgMed desvio bordas satur brilho maiorR clust perim calor (Q8)"));
+  Serial.printf("  %d amostras avaliaveis, %lu us por quadro na extracao\n", g_n,
+                (unsigned long)g_usPorQuadro);
+
+  free(quadro);
+  return g_n > 0;
+}
+
+// ---------------------------------------------------------------------
+//  3. Treino: regressao logistica por descida de gradiente
+//
+//  Descida em lote, 600 epocas, com regularizacao L2. A L2 nao esta ai
+//  por elegancia: sem ela os pesos crescem sem limite num conjunto quase
+//  separavel, e peso grande nao cabe no int16 do Q8 - o modelo treinado
+//  nao caberia no modelo executado.
+//
+//  RESTRICAO DE SINAL. O treino livre, rodado nesta placa em 09/09/2026,
+//  chegou a 95,8% de acerto com peso NEGATIVO em exgMedio e em
+//  perimetro. Ou seja: aprendeu que "verde demais e suspeito", porque no
+//  banco sintetico os negativos dificeis (pano e plastico) sao os mais
+//  verdes de todos. Dentro do banco isso e verdade e da acerto alto;
+//  fora dele e falso, e derrubaria a primeira planta vicosa no sol.
+//
+//  A resposta nao e treinar mais - e proibir. Cada caracteristica ganha
+//  um sinal permitido, vindo da fisica e nao dos dados, e a descida e
+//  projetada de volta nesse semiespaco a cada passo. Isso custa alguns
+//  pontos de acerto no banco e compra monotonicidade: mais verde nunca
+//  pode DIMINUIR a chance de haver planta, mais saturado nunca pode
+//  aumentar. Um modelo com essa garantia erra de forma previsivel; sem
+//  ela, erra de forma criativa.
+// ---------------------------------------------------------------------
+static float g_w[Visao::N_CARACTERISTICAS];
+static float g_b = 0.0f;
+
+//  +1 exige peso >= 0    -1 exige peso <= 0    2 proibe a caracteristica
+//
+//  BRILHO ENTRA COMO PROIBIDO, e isso tambem saiu de um resultado medido
+//  aqui: no treino livre ele recebeu peso -709, ou seja, o modelo
+//  aprendeu "cena escura, provavelmente planta". No banco isso e
+//  verdade - a unica cena escura positiva e folhagem na sombra, e as
+//  claras (parede, ceu, solo seco) sao todas negativas - mas e um atalho
+//  do gerador, nao um fato do mundo. Planta ao sol e clara. O indice ExG
+//  ja e normalizado justamente para nao depender de intensidade; deixar
+//  o brilho entrar na decisao desfaria essa propriedade. Ele continua
+//  sendo medido, e continua servindo para a flag de luz baixa - que e
+//  julgamento sobre a QUALIDADE do quadro, nao sobre o conteudo dele.
+//
+//  cobertura exgMedio desvio bordas satur brilho maiorR clusters perim calor
+static const int8_t SINAL[Visao::N_CARACTERISTICAS] = {+1, +1, +1, +1, -1, 2, +1, +1, +1, +1};
+
+static float sigmoide(float z) {
+  if (z > 20.0f) return 1.0f;
+  if (z < -20.0f) return 0.0f;
+  return 1.0f / (1.0f + expf(-z));
+}
+
+static void treina(bool restrito) {
+  Serial.printf("\n--- 3. treino da regressao logistica (%s) ---\n",
+                restrito ? "com restricao de sinal" : "livre");
+
+  for (int i = 0; i < Visao::N_CARACTERISTICAS; i++) g_w[i] = 0.0f;
+  g_b = 0.0f;
+
+  const float taxa = 0.6f;
+  const float l2   = 3e-4f;
+  const int epocas = 600;
+  int nTreino      = 0;
+  for (int k = 0; k < g_n; k++)
+    if (g_banco[k].treino) nTreino++;
+  if (!nTreino) return;
+
+  for (int e = 0; e < epocas; e++) {
+    float gw[Visao::N_CARACTERISTICAS];
+    float gb = 0.0f;
+    for (int i = 0; i < Visao::N_CARACTERISTICAS; i++) gw[i] = 0.0f;
+    float perda = 0.0f;
+
+    for (int k = 0; k < g_n; k++) {
+      const Amostra& a = g_banco[k];
+      if (!a.treino) continue;
+      float z = g_b;
+      for (int i = 0; i < Visao::N_CARACTERISTICAS; i++) z += g_w[i] * (a.x[i] / 256.0f);
+      const float p = sigmoide(z);
+      const float y = (float)a.rotulo;
+      const float d = p - y;
+      for (int i = 0; i < Visao::N_CARACTERISTICAS; i++) gw[i] += d * (a.x[i] / 256.0f);
+      gb += d;
+      perda -= y * logf(p + 1e-6f) + (1 - y) * logf(1 - p + 1e-6f);
+    }
+
+    for (int i = 0; i < Visao::N_CARACTERISTICAS; i++) {
+      g_w[i] -= taxa * (gw[i] / nTreino + l2 * g_w[i]);
+      // Projecao: joga o peso de volta no semiespaco permitido. Uma
+      // linha, e e ela que garante a monotonicidade do modelo inteiro.
+      if (restrito) {
+        if (SINAL[i] == 2) g_w[i] = 0.0f;
+        if (SINAL[i] == 1 && g_w[i] < 0.0f) g_w[i] = 0.0f;
+        if (SINAL[i] == -1 && g_w[i] > 0.0f) g_w[i] = 0.0f;
+      }
+    }
+    g_b -= taxa * (gb / nTreino);
+
+    if (e % 150 == 0 || e == epocas - 1) {
+      Serial.printf("  epoca %3d  perda %.4f\n", e, perda / nTreino);
+    }
+  }
+}
+
+// ---------------------------------------------------------------------
+//  4. Medida: acerto do modelo em ponto fixo, no conjunto reservado
+// ---------------------------------------------------------------------
+static int16_t emQ8(float v) {
+  long q = lroundf(v * 256.0f);
+  if (q > 32767) q = 32767;
+  if (q < -32768) q = -32768;
+  return (int16_t)q;
+}
+
+static void mede(const Visao::Pesos& p, const char* titulo) {
+  Serial.printf("\n--- %s ---\n", titulo);
+
+  int certoT = 0, totT = 0, certoV = 0, totV = 0;
+  int falsoPos = 0, falsoNeg = 0;
+  const Visao::Parametros par = Visao::Parametros::padrao();
+
+  for (uint8_t t = 0; t < Cenas::N_TIPOS; t++) {
+    int acertos = 0, total = 0;
+    uint32_t somaProb = 0;
+    for (int k = 0; k < g_n; k++) {
+      const Amostra& a = g_banco[k];
+      if (a.tipo != t) continue;
+
+      int32_t acc = 0;
+      for (int i = 0; i < Visao::N_CARACTERISTICAS; i++) acc += (int32_t)p.w[i] * (int32_t)a.x[i];
+      const uint16_t prob = Visao::sigmoidePermil((acc >> 8) + p.b);
+      const bool disse    = prob >= par.limiarPlanta;
+      const bool certo    = (disse == (a.rotulo == 1));
+
+      somaProb += prob;
+      total++;
+      if (certo) acertos++;
+      if (a.treino) {
+        totT++;
+        if (certo) certoT++;
+      } else {
+        totV++;
+        if (certo) certoV++;
+        if (!certo && a.rotulo == 0) falsoPos++;
+        if (!certo && a.rotulo == 1) falsoNeg++;
+      }
+    }
+    if (total) {
+      Serial.printf("  %-20s %2d/%2d  prob media %4lu permil\n", Cenas::nome(t), acertos, total,
+                    (unsigned long)(somaProb / total));
+    }
+  }
+
+  Serial.printf("  treino  %d/%d  (%.1f%%)\n", certoT, totT, totT ? 100.0 * certoT / totT : 0.0);
+  Serial.printf("  RESERVA %d/%d  (%.1f%%)  falso positivo %d  falso negativo %d\n", certoV, totV,
+                totV ? 100.0 * certoV / totV : 0.0, falsoPos, falsoNeg);
+}
+
+static void imprimePesos(const Visao::Pesos& p) {
+  Serial.println(F("\n--- pesos para colar em lib/farmio_visao/pesos.cpp ---"));
+  Serial.print(F("const Pesos PESOS_PADRAO = {{"));
+  for (int i = 0; i < Visao::N_CARACTERISTICAS; i++) {
+    Serial.printf("%d%s", p.w[i], i + 1 < Visao::N_CARACTERISTICAS ? ", " : "");
+  }
+  Serial.printf("}, %d};\n", p.b);
+}
+
+// ---------------------------------------------------------------------
+static bool g_rodou = false;
+
+static void roda() {
+  Serial.println();
+  Serial.println(F("====================================================="));
+  Serial.printf("  FarmIO autoteste  |  %s %s\n", __DATE__, __TIME__);
+  Serial.printf("  heap livre: %lu bytes\n", (unsigned long)ESP.getFreeHeap());
+  Serial.println(F("====================================================="));
+
+  testaEnlace();
+  testaFoto();
+  testaRetransmissao();
+
+  if (montaBanco()) {
+    mede(Visao::PESOS_PADRAO, "4. acerto dos pesos ATUAIS (os que estao no firmware)");
+
+    Visao::Pesos livre, restrito;
+    treina(false);
+    for (int i = 0; i < Visao::N_CARACTERISTICAS; i++) livre.w[i] = emQ8(g_w[i]);
+    livre.b = emQ8(g_b);
+    mede(livre, "5. treino LIVRE, ja em ponto fixo Q8");
+
+    treina(true);
+    for (int i = 0; i < Visao::N_CARACTERISTICAS; i++) restrito.w[i] = emQ8(g_w[i]);
+    restrito.b = emQ8(g_b);
+    mede(restrito, "6. treino RESTRITO, ja em ponto fixo Q8");
+
+    // O que vai para o firmware e o restrito: perder alguns pontos no
+    // banco sintetico vale a garantia de que o modelo nao inverteu o
+    // significado de "verde".
+    Serial.println(F("\n=== livre (referencia, NAO usar) ==="));
+    imprimePesos(livre);
+    Serial.println(F("\n=== restrito (e este que vai para o firmware) ==="));
+    imprimePesos(restrito);
+  }
+
+  Serial.printf("\n>>> %d falha(s) no enlace. Extracao: %lu us por quadro.\n", g_falhas,
+                (unsigned long)g_usPorQuadro);
+  Serial.println(F(">>> fim do autoteste"));
+  g_rodou = true;
+}
+
+void setup() {
+  Serial.begin(115200);
+}
+
+void loop() {
+  // Nao roda antes de ter alguem lendo: com CDC nativo, tudo que sai
+  // antes do monitor engatar se perde. Passados 10 s sem monitor, roda
+  // assim mesmo - autoteste que exige plateia nao serve para CI.
+  static const uint32_t limite = 10000;
+  if (!g_rodou && (Serial || millis() > limite)) {
+    delay(400);
+    roda();
+  }
+  delay(50);
+}

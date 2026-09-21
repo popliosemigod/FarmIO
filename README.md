@@ -1,11 +1,48 @@
-# FarmIO
+<div align="center">
 
-**Vaso inteligente e automático.** Irriga sozinho, avisa o que está errado e
-mostra tudo em três lugares: no display, na página web e na serial.
+# 🌱 FarmIO
 
-> **Estado: compila e está dimensionado. Nenhuma placa foi gravada ainda.**
-> Todo número neste repositório vem de datasheet ou de cálculo. Os limiares dos
-> sensores são ponto de partida, não medida — ver [calibração](docs/02-hardware-e-pinagem.md#calibração--leia-antes-de-confiar-em-qualquer-leitura).
+**Vaso inteligente e automático.**<br>
+Irriga sozinho, enxerga se há planta na frente e se controla pelo celular — sem
+internet, sem computador, só com o roteador do próprio celular.
+
+![Firmware](https://img.shields.io/badge/firmware-v0.2-2ea44f)
+![Placas](https://img.shields.io/badge/placas-ESP32--C3%20%2B%20XIAO%20ESP32--S3-blue)
+![PlatformIO](https://img.shields.io/badge/build-PlatformIO-orange)
+![Ensaio de campo](https://img.shields.io/badge/ensaio%20de%20campo-celular%20ok-brightgreen)
+![Calibração](https://img.shields.io/badge/calibração-parcial-yellow)
+
+<table>
+  <tr>
+    <td align="center" width="50%">
+      <img src="docs/img/vaso-montado.jpg" alt="O vaso FarmIO montado, com terra, mangueira da bomba e a eletrônica na bancada" width="100%"><br>
+      <sub><b>O vaso montado.</b> Corpo impresso em 3D, terra de verdade, a mangueira da bomba
+      entrando por cima e a ponte H na bancada.</sub>
+    </td>
+    <td align="center" width="50%">
+      <img src="docs/img/app-no-celular.jpg" alt="A página do FarmIO aberta no celular, com sensores, botão da bomba e a foto da câmera" width="62%"><br>
+      <sub><b>O app, no celular.</b> Servido pelo próprio vaso: sensores, alerta, botão da
+      bomba e a foto tirada na hora.</sub>
+    </td>
+  </tr>
+</table>
+
+</div>
+
+## Onde está
+
+Ensaio de campo de **21/09/2026**, só com o celular — nenhum PC na conta:
+
+| | Situação |
+| --- | --- |
+| ✅ **App no celular pela rede própria do vaso** (`farmio-01` → `192.168.4.1`) | funcionou |
+| ✅ **App no celular pelo roteador do celular** | funcionou |
+| ✅ **Foto pedida no app**, da câmera até a tela, pelo fio | funcionou; 58 de 58 em bancada, com retransmissão |
+| ✅ **Sensores de ar e solo** na página | leitura viva; terra seca lida como seca |
+| ✅ **Alerta** de solo seco e tanque vazio | na faixa vermelha do topo |
+| ⏳ **Umidade do solo** | calibração **parcial**: ponto seco medido, molhado ainda é chute ([calibração](docs/02-hardware-e-pinagem.md#calibração--leia-antes-de-confiar-em-qualquer-leitura)) |
+| ⏳ **Bomba girando** | não ensaiada: o tanque ainda está vazio |
+| ⚠️ **Detecção de planta** | **não calibrada** — já deu falso positivo com foto real, e a página avisa ([docs/05](docs/05-visao-planta.md#o-primeiro-teste-real-um-falso-positivo)) |
 
 Este é um projeto do laboratório [**Jaspy**](https://github.com/popliosemigod/Jaspy),
 que guarda o método, as ferramentas e a documentação comum. Cada projeto tem
@@ -16,35 +53,64 @@ repositório próprio; este é o do FarmIO.
 - lê temperatura e umidade do ar (DHT22), umidade do solo e nível do tanque;
 - **irriga em pulsos** quando o solo fica extremamente seco, e para na hora se o
   tanque esvaziar ou o solo encharcar;
-- classifica o solo em cinco faixas em vez de um limiar único — limiar único faz
-  a bomba oscilar em torno do ponto de corte;
+- classifica o solo em cinco faixas em vez de um limiar único — limiar único faz a
+  bomba oscilar em torno do ponto de corte;
+- **reconhece se há uma planta na frente da câmera**, por textura e não por cor —
+  é o que impede um balde verde de passar por planta;
+- **conhece o próprio orçamento de corrente** e ajusta o brilho do anel ao que a
+  porta USB aguenta, em vez de descobrir o limite reiniciando;
 - alerta em três canais: tela, anel de LED e página web;
-- transmite vídeo ao vivo, com a ESP32-CAM embutida na mesma página.
+- **tira uma foto quando o app pede** — pelo fio, sem a câmera precisar de rede;
+- **liga e desliga a bomba por um botão no app**, sem mexer na lógica automática e
+  sem passar por cima da proteção contra bomba a seco;
+- **funciona em campo aberto só com um celular**: tem rede própria sempre no ar, e
+  entra no roteador do celular quando ele estiver ligado.
 
-## Hardware
+## Duas placas
+
+| Papel | Placa | O que roda nela |
+| --- | --- | --- |
+| O vaso | **ESP32-C3** (4 MB, USB nativo) | sensores, bomba, tela, anel, página |
+| O olho | **XIAO ESP32-S3 Sense** (OV3660, 8 MB PSRAM) | captura, classificação, foto |
+
+Elas conversam por **UART**, não por Wi-Fi — as razões estão em
+[04-enlace-c3-cam.md](docs/04-enlace-c3-cam.md). Pelo fio passam o veredito, a
+cada 10 s, e a foto, quando o app pede. A câmera não tem rádio ligado: o celular
+só conversa com o vaso.
 
 | Item | Componente |
 | --- | --- |
-| Controle | ESP32 DevKit V1 |
-| Câmera | ESP32-CAM (placa separada, só streaming) |
 | Ar | DHT22 |
 | Solo | sensor capacitivo de umidade |
 | Tanque | sensor de nível tipo pente (Funduino) |
 | Tela | OLED SSD1306 128×64, I²C |
 | Luz | anel de 16 LEDs WS2812 (5050) |
-| Bomba | RS-385 12 V via TB6612FNG |
+| Bomba | RS-385 em 7–9 V, fonte própria, via ponte H dupla mini — **um pino** |
 
-Pinagem completa, alimentação e as armadilhas do ADC2 estão em
+Pinagem completa, alimentação e as armadilhas de ADC e strapping estão em
 [`docs/02-hardware-e-pinagem.md`](docs/02-hardware-e-pinagem.md).
 
 ## Compilar e gravar
 
 ```powershell
-pio run                        # compila
-pio run -t upload              # grava
-pio device monitor -b 115200   # acompanha
-pio run -e bancada -t upload   # log detalhado, para calibrar
+pio run                        # compila o vaso e a câmera
+pio run -e c3        -t upload # grava o vaso (USB nativo)
+pio run -e cam       -t upload # grava a câmera XIAO (USB-C dela)
+pio run -e autoteste -t upload # treina e mede, sem nada ligado na placa
+pio run -e ensaio    -t upload # le so o DHT22 e o nivel, sem mais nada
+pio run -e bancada   -t upload # o vaso com log detalhado, para calibrar
+pio device monitor -e c3
 ```
+
+| Ambiente | Placa | Para que serve |
+| --- | --- | --- |
+| `c3` | ESP32-C3 | o vaso |
+| `cam` | XIAO ESP32-S3 Sense | a câmera |
+| `cam-aithinker` | ESP32-CAM | a câmera da v0.2, mantida compilando |
+| `autoteste` | ESP32-C3 | exercita o enlace e treina o classificador na placa |
+| `ensaio` | ESP32-C3 | bring-up de sensor, um subsistema por vez |
+| `bancada` | ESP32-C3 | o vaso com log detalhado |
+| `esp32dev` | DevKit V1 | a placa da v0.1, mantida compilando |
 
 Credencial de Wi-Fi é opcional para compilar:
 
@@ -52,59 +118,106 @@ Credencial de Wi-Fi é opcional para compilar:
 Copy-Item include\secrets.example.h include\secrets.h   # e preencher
 ```
 
-Sem `secrets.h` o firmware compila e roda — o vaso sobe o próprio ponto de acesso
-(`farmio-01`) e espera configuração. É isso que permite o CI compilar sem nenhuma
-senha.
+Sem `secrets.h` o firmware compila e roda — só com a rede própria. É isso que
+permite o CI compilar sem nenhuma senha. **A detecção de planta e a foto não
+dependem de rede nenhuma**: elas vivem no fio.
+
+### Em campo: como chegar no app
+
+| Caminho | Como | Endereço |
+| --- | --- | --- |
+| **rede do vaso** — sempre funciona | desligar o roteador do celular e entrar no Wi-Fi `farmio-01` | `http://192.168.4.1` |
+| roteador do celular | ligar o roteador do celular; o vaso entra sozinho em até ~1 min | `http://farmio-01.local`, ou o IP de `farmio-01` na lista de aparelhos conectados do roteador |
+
+O roteador do celular precisa estar em **2,4 GHz** e **WPA2** — as placas não
+enxergam 5 GHz, e o erro que aparece é "rede não encontrada", não "senha errada".
+
+**O IP muda.** Cada vez que o roteador do celular é religado, o vaso pode ganhar outro
+endereço. Não adianta anotar o da última vez. Se `farmio-01.local` não abrir no
+celular — nem todo Android resolve `.local` —, o caminho que nunca falha é a rede
+própria: desligar o roteador, entrar em `farmio-01` e abrir `192.168.4.1`. O Android
+avisa que a rede "não tem internet"; é para continuar conectado assim mesmo.
+
+**Os dois caminhos foram ensaiados no celular em 21/09/2026**, com o vaso ligado
+fora do PC. Antes disso, com o roteador emulado, a página respondeu em ~50 ms, a
+foto chegou em ~1,7 s e o vaso reentrou no roteador 17 s depois de ele voltar — ver
+o [diário](diario.md).
 
 ## Consumo de recursos
 
-Compilação de 02/09/2026, ESP32 DevKit V1:
+Compilação de 21/09/2026:
 
-| | Uso |
-| --- | --- |
-| RAM | 14,1% — 46,3 kB de 320 kB |
-| Flash | 64,4% — 844 kB de 1,31 MB |
+| Ambiente | RAM | Flash |
+| --- | --- | --- |
+| `c3` (vaso) | 17,4% — 57,0 kB de 320 kB | 68,2% — 894 kB de 1,31 MB |
+| `cam` (câmera) | 13,4% — 43,9 kB de 320 kB | 11,5% — 360 kB de 3,15 MB |
+
+A câmera encolheu 114 kB em 21/09: é a pilha de Wi-Fi que saiu junto com o vídeo.
 
 ## Estrutura
 
 ```
 FarmIO/
-├── platformio.ini      ambientes, bibliotecas fixadas, build flags
+├── platformio.ini      sete ambientes, bibliotecas fixadas, build flags
 ├── include/
-│   ├── config.h        pinagem, limiares, estados  ← só isso muda ao trocar de placa
+│   ├── config.h        pinagem, limiares, orçamento  ← só isso muda ao trocar de placa
 │   ├── sensores.h      DHT22, solo, tanque, filtro de mediana
 │   ├── bomba.h         acionamento e intertravamentos
+│   ├── camera.h        o lado vaso do enlace, e a escada de recuperação
+│   ├── energia.h       orçamento de corrente e teto de brilho
 │   ├── anel.h          anel WS2812, animações não bloqueantes
 │   ├── tela.h          OLED, tela inicial e tela de risco
-│   ├── web.h           servidor HTTP, JSON e vídeo
-│   └── secrets.example.h
-├── src/main.cpp        boot, rede e loop
-├── docs/               herança do SmartFarm, hardware, lógica
+│   ├── web.h           o app: página, JSON, foto e botão da bomba
+│   ├── telemetria.h    o painel legível da serial, e os comandos de bancada
+│   └── cenas.h         gerador de cenas sintéticas (só no autoteste)
+├── lib/
+│   ├── farmio_enlace/  protocolo de quadros — C++11 puro, os dois lados do fio
+│   └── farmio_visao/   dez características + regressão logística em ponto fixo
+│       └── pesos.cpp   o modelo: onze números, gerados pelo autoteste
+├── src/
+│   ├── main.cpp            o vaso
+│   ├── main_cam.cpp        a câmera
+│   ├── main_autoteste.cpp  treino e medição na placa
+│   └── cenas.cpp           desenho das cenas sintéticas
+├── scripts/
+│   └── calibra_solo.py só aceita a leitura do solo depois de ela estabilizar
+├── docs/               herança, hardware, lógica, enlace, visão, energia
+│   └── img/            fotos do vaso e do app
 └── diario.md           previsto × medido, a cada iteração
 ```
 
 ## Documentação
 
-- [Herança do SmartFarm](docs/01-heranca-smartfarm.md) — de onde o projeto veio,
-  a especificação original preservada e o que mudou
-- [Hardware e pinagem](docs/02-hardware-e-pinagem.md) — ligação, alimentação,
-  ADC2 × Wi-Fi e o roteiro de calibração
+- [Herança do SmartFarm](docs/01-heranca-smartfarm.md) — de onde o projeto veio, a
+  especificação original preservada e o que mudou
+- [Hardware e pinagem](docs/02-hardware-e-pinagem.md) — ligação, ADC, strapping, os
+  treze pinos do C3 e o roteiro de calibração
 - [Lógica de operação](docs/03-logica-de-operacao.md) — faixas, intertravamentos,
   riscos, telas e anel
+- [Enlace vaso ↔ câmera](docs/04-enlace-c3-cam.md) — por que fio e não Wi-Fi,
+  formato do quadro, retransmissão da foto, diagnóstico do fio
+- [Visão: tem planta na frente?](docs/05-visao-planta.md) — as dez
+  características, o treino na placa e as quatro iterações até o modelo atual
+- [O projeto inteiro numa porta USB](docs/06-energia-usb.md) — o orçamento de
+  corrente, o que cabe e o que não cabe
 - [Diário](diario.md) — cada iteração com previsto ao lado de medido
 
 ## Próximos passos
 
-1. **Gravar numa placa.** É o que transforma "compila" em "funciona" e destrava
-   todo o resto.
-2. **Calibrar solo e tanque** com o ambiente `bancada`, e commitar os números
-   medidos com tipo `calib`.
-3. **Ensaio de irrigação** com planta real: medir quantos pulsos são necessários
-   para sair da faixa seca, e ajustar `BOMBA_PASSO_MS` e `BOMBA_DESCANSO_MS`.
-4. **Diagnóstico de qualidade foliar** pela câmera — é o que separa o FarmIO do
-   SmartFarm e ainda não existe.
+1. **Pôr água no tanque e ensaiar a bomba** na fonte de 7–9 V — primeiro pelo botão
+   do app, depois pelo automático.
+2. **Calibrar a visão com fotos reais.** A primeira foto real já deu falso
+   positivo. Com planta na bancada: fotos com e sem planta pelo comando `F` da
+   câmera, e o retreino em cima delas.
+3. **Completar a calibração do solo: molhar a terra** até encharcar e medir com
+   `scripts/calibra_solo.py` (espera a leitura estabilizar). O ponto seco já está
+   medido, mas ainda assentando (a leitura seca desceu 50 pontos em 20 min):
+   refazer depois de algumas horas. O molhado, e portanto as faixas do meio,
+   ainda são chute. O tanque também espera água.
+4. **Medir a corrente com amperímetro** e comparar com o `energia_ma` publicado no
+   JSON.
 5. **Acoplamento entre vasos**, que dá nome ao projeto. Nenhum protocolo definido
-   ainda.
+   ainda — mas o quadro do enlace já é o candidato natural.
 
 ## Convenções
 
@@ -112,9 +225,9 @@ Commits seguem `tipo(subsistema): descrição`, validados pelo `commitizen`
 ([`cz.toml`](cz.toml)). Branches: `main` guarda o estado coerente e publicado,
 `develop` integra o trabalho em curso, `feat/<assunto>` para tarefa curta.
 
-**Tag de versão só nasce de coisa medida.** A v0.1 está na `main` porque compila
-e está documentada, mas não recebeu tag — tag em firmware que nunca gravou numa
-placa transforma a linha do tempo em ficção.
+**Tag de versão só nasce de coisa medida.** A v0.2 está na `main` porque compila,
+roda nas duas placas e passou no ensaio de campo com o celular — mas ainda não
+recebeu tag: a bomba não girou e a calibração do solo está pela metade.
 
 ```powershell
 python -m pip install --user pre-commit commitizen

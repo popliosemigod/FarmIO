@@ -1,0 +1,7 @@
+{
+  "name": "farmio_visao",
+  "version": "1.0.0",
+  "description": "Deteccao de planta por nove caracteristicas de cor e textura com regressao logistica em ponto fixo",
+  "frameworks": "*",
+  "platforms": "*"
+}

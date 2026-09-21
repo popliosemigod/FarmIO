@@ -9,8 +9,8 @@
 //  Vaso inteligente: irriga sozinho, avisa o que esta errado e mostra
 //  tudo em tres lugares - display, pagina web e serial.
 //
-//  ESP32 DevKit V1 | DHT22 | umidade de solo | nivel de tanque |
-//  OLED SSD1306 | anel WS2812 de 16 pixels | bomba 12 V via TB6612FNG
+//  ESP32-C3 | DHT22 | umidade de solo | nivel de tanque | ESP32-CAM |
+//  OLED SSD1306 | anel WS2812 de 16 pixels | bomba por ponte H mini
 //
 //  Regra que vale para o arquivo inteiro: NADA BLOQUEIA. Sem delay() em
 //  regime, sem while esperando sensor. Um vaso que trava com o Wi-Fi
@@ -20,10 +20,14 @@
 // =====================================================================
 
 #include <Arduino.h>
+#include <ESPmDNS.h>
 #include <WiFi.h>
 
 #include "config.h"
+#include "energia.h"
 #include "sensores.h"
+#include "camera.h"
+#include "telemetria.h"
 #include "bomba.h"
 #include "anel.h"
 #include "tela.h"
@@ -46,6 +50,7 @@
 
 // ---- definicao dos globais declarados em config.h -------------------
 Leituras L;
+Visto V;
 EstadoBomba B;
 uint8_t riscosAtivos = RISCO_NENHUM;
 
@@ -53,57 +58,94 @@ static uint32_t bootAte = 0;  // fim da animacao de abertura
 
 // ---------------------------------------------------------------------
 //  Rede - maquina de estado, nunca um laco de espera
+//
+//  CAMPO ABERTO: A UNICA INFRAESTRUTURA E O CELULAR. Por isso o vaso
+//  fala em duas redes ao mesmo tempo, e cada uma cobre a falha da outra:
+//
+//    rede propria  'farmio-01', SEMPRE no ar, sempre em 192.168.4.1. O
+//                  celular entra nela como em qualquer Wi-Fi. Nao depende
+//                  de nada: nem do roteador do celular estar ligado, nem
+//                  de alguem descobrir IP. E o caminho que funciona sempre.
+//
+//    roteador      o roteador do celular (secrets.h). Quando ele esta
+//                  ligado e ao alcance, o vaso entra nele tambem, e o
+//                  celular alcanca o vaso sem sair da propria rede - e sem
+//                  perder os dados moveis. O endereco ai e dado pelo
+//                  celular, e aparece na serial e em farmio-01.local.
+//
+//  Por que a rede propria nao e so "reserva quando o roteador falha": em
+//  campo o roteador do celular fica DESLIGADO quase o tempo todo - so
+//  existe quando alguem esta ali. Uma rede de reserva que precisasse
+//  detectar a falha para subir estaria subindo o tempo inteiro.
+//
+//  A CONVIVENCIA DAS DUAS TEM UM CUSTO: para procurar o roteador, o radio
+//  sai do canal da rede propria por ~2 s, e quem esta conectado nela
+//  perde a pagina nesse intervalo. Entao, enquanto houver alguem
+//  conectado na rede propria, o vaso NAO procura o roteador. Quem esta
+//  usando o vaso tem prioridade sobre quem talvez apareca.
 // ---------------------------------------------------------------------
 namespace Rede {
 
 static bool online          = false;
-static bool modoAp          = false;
+static bool temRoteador     = false;
 static uint32_t tentativaEm = 0;
 static uint32_t esperaMs    = 2000;
 
-inline void sobeAp() {
-  WiFi.mode(WIFI_AP);
-  WiFi.softAP(FARMIO_NOME, FARMIO_AP_PASS);
-  modoAp = true;
-  Serial.printf("[rede] sem credencial. AP '%s' no ar em %s\n", FARMIO_NOME,
-                WiFi.softAPIP().toString().c_str());
-}
-
 inline void begin() {
-  if (strlen(FARMIO_WIFI_SSID) == 0) {
-    sobeAp();
-    return;
-  }
+  temRoteador = strlen(FARMIO_WIFI_SSID) > 0;
+
   WiFi.persistent(false);
-  WiFi.mode(WIFI_STA);
+  WiFi.mode(temRoteador ? WIFI_AP_STA : WIFI_AP);
   WiFi.setHostname(FARMIO_NOME);
-  WiFi.setAutoReconnect(false);  // a reconexao e nossa, com espera crescente
-  WiFi.begin(FARMIO_WIFI_SSID, FARMIO_WIFI_PASS);
-  tentativaEm = millis();
-  Serial.printf("[rede] conectando em '%s'...\n", FARMIO_WIFI_SSID);
+  // Radio sempre acordado. Com o modem sleep padrao o C3 so escuta o
+  // roteador a cada DTIM: no hotspot, o ping alternava 2 ms e 1000 ms, e
+  // cada requisicao da pagina levava 1,3 s (medido em 21/09/2026). Custa
+  // uns 15 mA a mais - ja contados em ENERGIA_C3_MA.
+  WiFi.setSleep(false);
+
+  WiFi.softAP(FARMIO_NOME, FARMIO_AP_PASS);
+  Serial.printf("[rede] rede propria '%s' no ar em http://%s\n", FARMIO_NOME,
+                WiFi.softAPIP().toString().c_str());
+
+  if (temRoteador) {
+    WiFi.setAutoReconnect(false);  // a reconexao e nossa, com espera crescente
+    WiFi.begin(FARMIO_WIFI_SSID, FARMIO_WIFI_PASS);
+    tentativaEm = millis();
+    Serial.printf("[rede] procurando o roteador '%s'...\n", FARMIO_WIFI_SSID);
+  } else {
+    Serial.println("[rede] sem secrets.h: so a rede propria");
+  }
+
+  // farmio-01.local. Resolve em computador e em parte dos celulares; nos
+  // que nao resolvem, o IP sai na serial. Custa pouco e as vezes poupa
+  // a procura pelo endereco.
+  if (MDNS.begin(FARMIO_NOME)) MDNS.addService("http", "tcp", 80);
 }
 
 inline void tick() {
-  if (modoAp) return;
+  if (!temRoteador) return;
 
   const uint32_t agora = millis();
   if (WiFi.status() == WL_CONNECTED) {
     if (!online) {
       online   = true;
       esperaMs = 2000;
-      Serial.printf("[rede] conectado. http://%s  (%d dBm)\n", WiFi.localIP().toString().c_str(),
-                    WiFi.RSSI());
+      Serial.printf("[rede] no roteador '%s': http://%s  ou  http://%s.local  (%d dBm)\n",
+                    FARMIO_WIFI_SSID, WiFi.localIP().toString().c_str(), FARMIO_NOME, WiFi.RSSI());
     }
     return;
   }
 
   if (online) {
     online = false;
-    Serial.println("[rede] enlace caiu");
+    Serial.println("[rede] roteador do celular sumiu - a rede propria continua no ar");
     tentativaEm = agora;
   }
 
-  // Espera crescente ate 60 s: rede fora do ar nao merece uma tentativa
+  // Alguem usando a rede propria: nao sai do canal para procurar.
+  if (WiFi.softAPgetStationNum() > 0) return;
+
+  // Espera crescente ate 60 s: roteador desligado nao merece uma tentativa
   // por segundo consumindo corrente a toa.
   if (agora - tentativaEm < esperaMs) return;
   tentativaEm = agora;
@@ -115,20 +157,6 @@ inline void tick() {
 }  // namespace Rede
 
 // ---------------------------------------------------------------------
-//  Telemetria pela serial - o canal que funciona sem rede nenhuma
-// ---------------------------------------------------------------------
-static void heartbeatSerial() {
-  static uint32_t proximo = 0;
-  const uint32_t agora    = millis();
-  if ((int32_t)(agora - proximo) < 0) return;
-  proximo = agora + INTERVALO_SERIAL_MS;
-
-  char json[640];
-  Web::jsonSensores(json, sizeof(json));
-  Serial.println(json);
-}
-
-// ---------------------------------------------------------------------
 void setup() {
   Serial.begin(115200);
   delay(300);  // unica espera do firmware: janela para o monitor engatar
@@ -138,18 +166,24 @@ void setup() {
   Serial.printf("  build %s %s\n", __DATE__, __TIME__);
   Serial.println(F("====================================================="));
 
+  // Energia primeiro de tudo: e ela que decide o teto de brilho e se a
+  // bomba pode existir. Decidir isso depois de acender o anel seria
+  // acender o anel para so entao descobrir que nao cabia.
+  Energia::begin();
+
   memset(&L, 0, sizeof(L));
   memset(&B, 0, sizeof(B));
   L.temperaturaC = NAN;
   L.umidadeArPct = NAN;
   L.soloFaixa    = SOLO_INVALIDO;
 
-  pinMode(PIN_LED_PLACA, OUTPUT);
+  if (PIN_LED_PLACA >= 0) pinMode(PIN_LED_PLACA, OUTPUT);
   pinMode(PIN_BOTAO, INPUT_PULLUP);
 
   Bomba::begin();  // primeiro de todos: garante bomba desligada no boot
   Anel::begin();
   Sens::begin();
+  Camera::begin();
 
   if (Tela::begin()) {
     Tela::telaAbertura();
@@ -162,6 +196,7 @@ void setup() {
   Web::begin();
 
   bootAte = millis() + 3000;  // 3 s de animacao verde antes de operar
+  Telemetria::begin();
   Serial.println("[boot] pronto");
 }
 
@@ -170,20 +205,25 @@ void loop() {
   const bool ligando = (int32_t)(millis() - bootAte) < 0;
 
   Sens::tick();
-  riscosAtivos = Sens::avaliaRiscos();
+  // A camera entra com 'B.ligada' porque o orcamento de energia nao
+  // deixa os dois picos - bomba girando e camera capturando - caberem na
+  // mesma porta USB. Ver energia.h.
+  Camera::tick(B.ligada);
+  riscosAtivos = (uint8_t)(Sens::avaliaRiscos() | Camera::riscos());
 
   Bomba::tick();
   Rede::tick();
   Web::tick();
 
   Anel::reflete(riscosAtivos, ligando);
+  Anel::ajustaBrilho(V.enlaceOk, B.ligada);
   Anel::tick();
 
   if (!ligando) Tela::tick(riscosAtivos);
 
   // LED da placa: aceso enquanto irriga, apagado no resto. E o
   // diagnostico que sobra quando nem display nem rede respondem.
-  digitalWrite(PIN_LED_PLACA, B.ligada ? HIGH : LOW);
+  if (PIN_LED_PLACA >= 0) digitalWrite(PIN_LED_PLACA, B.ligada ? HIGH : LOW);
 
-  heartbeatSerial();
+  Telemetria::tick();
 }
