@@ -443,9 +443,12 @@ void setup() {
 
 void loop() {
   // ---- Enlace: e a unica obrigacao de tempo do loop -------------------
-  while (Enl.available()) g_rec.empurra((uint8_t)Enl.read());
+  // Esvazia a cada byte: o receptor guarda um quadro so. Ver camera.h.
   Enlace::Quadro q;
-  while (g_rec.proximo(q)) trata(q);
+  while (Enl.available()) {
+    g_rec.empurra((uint8_t)Enl.read());
+    while (g_rec.proximo(q)) trata(q);
+  }
 
   console();
 

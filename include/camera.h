@@ -341,9 +341,16 @@ inline const char* pedeFoto(bool bombaLigada) {
 // energia: nao se pede quadro com a bomba girando.
 inline void tick(bool bombaLigada) {
   // ---- Recebe o que chegou -------------------------------------------
-  while (porta().available()) receptor().empurra((uint8_t)porta().read());
+  // Esvazia o receptor a cada byte, nao so no fim. O receptor guarda UM
+  // quadro; a foto chega em rajada e acumula dezenas de quadros na UART
+  // enquanto o loop atende o HTTP. Empurrar tudo antes de tirar qualquer
+  // quadro transbordava o receptor e perdia o primeiro pedaco - foi o que
+  // o teste de campo de 21/09/2026 pegou ("pedaco perdido no fio").
   Enlace::Quadro q;
-  while (receptor().proximo(q)) trata(q);
+  while (porta().available()) {
+    receptor().empurra((uint8_t)porta().read());
+    while (receptor().proximo(q)) trata(q);
+  }
 
   const uint32_t agora = millis();
 

@@ -250,6 +250,51 @@ static void testaFoto() {
       confere("pedaco perdido e detectado, nao remendado", buraco && !fimOk);
     }
   }
+  // Rajada: a foto inteira de uma vez, como chega de verdade quando o
+  // loop do vaso esta ocupado com HTTP. Primeiro do jeito certo (esvazia a
+  // cada byte), depois do jeito que existia ate 21/09/2026 (empurra tudo,
+  // esvazia no fim) - que TEM que perder, senao o teste nao prova nada.
+  for (int jeito = 0; jeito < 2; jeito++) {
+    Enlace::Receptor r;
+    uint32_t recebido = 0;
+    bool buraco       = false;
+    uint8_t* rajada   = (uint8_t*)malloc(TAM + TAM / 8 + 64);
+    size_t nr         = 0;
+    for (uint32_t desloc = 0; desloc < TAM; desloc += Enlace::FOTO_PEDACO_MAX) {
+      uint32_t k = TAM - desloc;
+      if (k > Enlace::FOTO_PEDACO_MAX) k = Enlace::FOTO_PEDACO_MAX;
+      uint8_t c[Enlace::CARGA_MAX];
+      Enlace::poe32(c, desloc);
+      memcpy(c + 4, img + desloc, k);
+      nr += Enlace::monta(Enlace::TIPO_FOTO_PEDACO, c, (uint8_t)(4 + k), rajada + nr,
+                          Enlace::QUADRO_MAX);
+    }
+    Enlace::Quadro qq;
+    auto consome = [&]() {
+      while (r.proximo(qq)) {
+        if (Enlace::pega32(qq.carga) != recebido) {
+          buraco = true;
+          continue;
+        }
+        memcpy(dest + recebido, qq.carga + 4, qq.n - 4);
+        recebido += qq.n - 4;
+      }
+    };
+    for (size_t i = 0; i < nr; i++) {
+      r.empurra(rajada[i]);
+      if (jeito == 0) consome();
+    }
+    consome();
+    free(rajada);
+    const bool inteira = !buraco && recebido == TAM && Enlace::crc16(dest, TAM) == crcImg;
+    if (jeito == 0) {
+      Serial.printf("  rajada de %u B: %lu B remontados\n", (unsigned)nr, (unsigned long)recebido);
+      confere("foto em rajada remonta esvaziando a cada byte", inteira);
+    } else {
+      confere("empurrar a rajada toda antes de esvaziar perde quadro", !inteira);
+    }
+  }
+
   free(img);
   free(dest);
 }

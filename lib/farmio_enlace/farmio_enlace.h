@@ -133,13 +133,16 @@ size_t monta(uint8_t tipo, const uint8_t* carga, uint8_t n, uint8_t* saida, size
 //  Receptor: alimenta-se byte a byte e entrega quadros inteiros.
 //
 //  Uso:
-//      while (serial.available()) rec.empurra(serial.read());
 //      Quadro q;
-//      while (rec.proximo(q)) trata(q);
+//      while (serial.available()) {
+//        rec.empurra(serial.read());
+//        while (rec.proximo(q)) trata(q);
+//      }
 //
-//  Separar 'empurra' de 'proximo' e de proposito: um unico push pode
-//  fechar dois quadros quando a serial acumulou, e API que devolve um
-//  quadro por byte perderia o segundo.
+//  O receptor guarda UM quadro (QUADRO_MAX bytes). Esvaziar a cada byte
+//  e obrigatorio: empurrar a serial inteira antes de chamar proximo()
+//  transborda o buffer quando chega rajada - a foto, por exemplo - e o
+//  que transborda e descartado pela frente, levando quadros inteiros.
 // ---------------------------------------------------------------------
 class Receptor {
 public:

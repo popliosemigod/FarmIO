@@ -376,7 +376,7 @@
 #define ENERGIA_TETO_MA    500  // 500 = USB 2.0 | 900 = USB 3.0 | 1500+ = carregador
 #define ENERGIA_MARGEM_PCT 20   // reserva para os picos de transmissao do radio
 
-#define ENERGIA_C3_MA   80   // ESP32-C3 com Wi-Fi conectado, media
+#define ENERGIA_C3_MA   95   // ESP32-C3 com o radio sempre acordado (sem modem sleep)
 #define ENERGIA_CAM_MA  180  // ESP32-CAM capturando QVGA, media
 #define ENERGIA_OLED_MA 20   // SSD1306 128x64 com metade dos pixels acesos
 #define ENERGIA_DHT_MA  2

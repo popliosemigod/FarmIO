@@ -11,12 +11,12 @@
 //
 //  O QUE CABE numa porta USB 2.0 de 500 mA:
 //
-//      ESP32-C3 com Wi-Fi ................  80 mA
+//      ESP32-C3 com Wi-Fi sem sleep ......  95 mA
 //      ESP32-CAM capturando QVGA .........  180 mA
 //      OLED SSD1306 ......................  20 mA
 //      DHT22 .............................  2 mA
 //      ------------------------------------------
-//      soma ..............................  282 mA
+//      soma ..............................  297 mA
 //      margem de 20% para picos de radio .  100 mA
 //      ------------------------------------------
 //      sobra para o anel de LED ..........  118 mA

@@ -97,6 +97,11 @@ inline void begin() {
   WiFi.persistent(false);
   WiFi.mode(temRoteador ? WIFI_AP_STA : WIFI_AP);
   WiFi.setHostname(FARMIO_NOME);
+  // Radio sempre acordado. Com o modem sleep padrao o C3 so escuta o
+  // roteador a cada DTIM: no hotspot, o ping alternava 2 ms e 1000 ms, e
+  // cada requisicao da pagina levava 1,3 s (medido em 21/09/2026). Custa
+  // uns 15 mA a mais - ja contados em ENERGIA_C3_MA.
+  WiFi.setSleep(false);
 
   WiFi.softAP(FARMIO_NOME, FARMIO_AP_PASS);
   Serial.printf("[rede] rede propria '%s' no ar em http://%s\n", FARMIO_NOME,
