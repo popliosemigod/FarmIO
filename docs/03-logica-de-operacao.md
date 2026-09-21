@@ -90,26 +90,101 @@ original e continua valendo.
 Nenhum pisca-pisca em lugar nenhum: o anel muda de estado deslizando. O pedido
 explícito era que o LED não gerasse desconforto visual.
 
-## Interface web
+## Interface web — o app
 
-- `GET /` — página única, servida da PROGMEM, sem CDN. Mostra os mesmos dados do
-  display e embute o vídeo da ESP32-CAM.
-- `GET /sensores` — JSON com a leitura atual. É a rota que qualquer cliente
-  consome: painel, script de bancada, outro vaso.
-- `GET /cam?ip=…` — grava o IP da ESP32-CAM sem recompilar.
+| Rota | O que faz |
+| --- | --- |
+| `GET /` | a página, servida da PROGMEM, sem CDN — em campo não há internet |
+| `GET /sensores` | JSON com o estado inteiro |
+| `POST /foto` | pede uma foto à câmera; volta na hora |
+| `GET /foto/estado` | progresso da foto enquanto ela chega pelo fio |
+| `GET /foto.jpg` | a última foto pronta |
+| `POST /bomba?acao=` | `ligar`, `manter` ou `desligar` |
 
-A página busca `/sensores` a cada 2 s. Se o nó não responder, ela diz "sem
-resposta do nó" em vez de mostrar dado velho como se fosse atual.
+**O celular só conversa com o vaso.** A foto vem pela UART e é servida daqui;
+um endereço, uma placa na rede.
+
+**Foto em três passos.** Uma foto leva de 2 a 3 s no fio. Uma requisição que
+esperasse por ela seguraria o loop do vaso — solo, bomba, intertravamentos — esse
+tempo todo. Então o pedido volta na hora, a página acompanha o progresso numa
+barra, e o JPEG só é servido depois de inteiro na memória.
+
+**Ações são `POST`.** Um `GET` que liga bomba seria acionado por qualquer coisa
+que pré-carregue links: navegador, prévia de mensagem, robô.
+
+A página busca `/sensores` a cada 2 s. Se o vaso não responder, ela diz "sem
+resposta do vaso" em vez de mostrar dado velho como se fosse atual.
+
+## A bomba pelo app
+
+Um botão liga e desliga a bomba, **sem influenciar a lógica automática** — foi o
+pedido, e ele é garantido por construção, não por cuidado:
+
+- enquanto o app está no comando, o automático não roda — senão ele desligaria a
+  bomba no fim do pulso de 4 s dele;
+- o acionamento pelo app tem contadores próprios, e o automático nunca os lê.
+  Pulsos, tempo total, teto do ciclo e descanso continuam exatamente onde
+  estariam se o botão não existisse;
+- se o automático estava no meio de um pulso quando o botão foi apertado, o pulso
+  termina pelo caminho normal dele, com a contabilidade que ele mesmo faria.
+
+**O botão não é uma chave.** É um pedido com prazo, que a página renova a cada
+2 s enquanto está aberta. Se a renovação parar — aba fechada, celular bloqueado,
+roteador do celular caiu —, a bomba desliga sozinha em **6 s**. E há um teto de
+**30 s** por acionamento, renovando ou não. Em campo, com o roteador do celular
+como única rede, uma chave que ficasse ligada esperando um "desligar" que nunca
+chega esvaziaria o tanque.
+
+**O que o botão não passa por cima.** Os intertravamentos se dividem pelo critério
+de quem consegue ver o problema a tempo:
+
+| Grupo | Intertravamentos | Vale para |
+| --- | --- | --- |
+| hardware | energia, tanque vazio, tanque sem leitura | automático **e** app |
+| planta | solo encharcado, solo sem leitura, teto do ciclo | só automático |
+
+Bomba girando a seco queima em minutos, e ninguém olhando o vaso vê o fundo do
+tanque a tempo — então essa proteção vale sempre. Já se a planta precisa de água,
+no manual quem decide é a pessoa que está olhando para ela.
+
+Quando o botão é recusado, a página diz por quê: `nao liguei: tanque vazio`.
+
+**Consequência que vale saber:** como o automático não enxerga o manual, ele pode
+disparar um pulso logo depois de uma rega pelo app, se o sensor ainda não tiver
+sentido a água — ela leva dezenas de segundos para percolar até ele. Se isso
+incomodar em campo, uma linha em `bomba.h` faz o fim do manual valer como fim de
+pulso, e o automático passa a respeitar o descanso. Não está feito porque o
+pedido foi, explicitamente, não mexer na lógica.
 
 ## Rede
 
-Máquina de estado, nunca laço de espera. Sem `secrets.h`, o vaso sobe o próprio
-ponto de acesso e espera configuração — é o que permite o CI compilar sem
-nenhuma senha. Com credencial e sem rede, a reconexão usa espera crescente de 2 s
-até 60 s: rede fora do ar não merece uma tentativa por segundo consumindo
-corrente à toa.
+Máquina de estado, nunca laço de espera. **Em campo aberto a única
+infraestrutura é o celular**, então o vaso fala em duas redes ao mesmo tempo:
+
+| Rede | Quando existe | Endereço do vaso |
+| --- | --- | --- |
+| própria, `farmio-01` | **sempre** | `http://192.168.4.1`, fixo |
+| roteador do celular | quando ligado e ao alcance | dado pelo celular; sai na serial e em `farmio-01.local` |
+
+A rede própria não é "reserva para quando o roteador falha": em campo o roteador
+do celular fica desligado quase o tempo todo. Uma reserva que precisasse detectar
+a falha para subir estaria subindo o tempo inteiro.
+
+As duas convivem com um custo: para procurar o roteador, o rádio sai do canal da
+rede própria por ~2 s. Então, **enquanto houver alguém conectado na rede própria,
+o vaso não procura o roteador** — quem está usando o vaso tem prioridade sobre
+quem talvez apareça. Sem roteador, a procura usa espera crescente de 2 s até 60 s.
+
+Sem `secrets.h`, só a rede própria sobe — e o firmware compila igual, que é o que
+permite o CI rodar sem nenhuma senha.
 
 ## Serial
 
-O mesmo JSON de `/sensores` sai pela serial a cada 3 s. É o canal que funciona
-sem rede nenhuma — e é dele que sai o número para calibrar os limiares.
+Um painel legível sai a cada 3 s: cada componente com o número cru, o que ele
+virou e de onde veio. O monitor é bidirecional — uma letra muda o que aparece,
+sem regravar: `b` painel, `l` linha, `j` JSON, `p` pinagem, `h` ajuda.
+
+Para ensaio de bancada, os mesmos caminhos do app: `f` pede uma foto, `+` liga a
+bomba como o botão liga (e ela desliga sozinha em 6 s, porque ninguém renova da
+serial), `-` desliga. Com os mesmos intertravamentos — `+` com o tanque vazio
+responde `bomba recusada: tanque vazio`.
