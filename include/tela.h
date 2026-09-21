@@ -143,7 +143,7 @@ inline void telaDeRisco(uint8_t riscos) {
   else if (riscos & RISCO_TEMPERATURA)
     acao = "verifique o sol";
   else if (riscos & RISCO_SENSOR_MUDO)
-    acao = "cheque o DHT22";
+    acao = "cheque sensores e fios";
   else if (riscos & RISCO_CAMERA_MUDA)
     acao = "cheque o fio da camera";
   else if (riscos & RISCO_SEM_PLANTA)

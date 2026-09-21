@@ -16,9 +16,16 @@
 //       sempre o mesmo numero, e numero estavel e o que permite fechar
 //       um timeout honesto.
 //
-//  A camera continua servindo o video por Wi-Fi - isso e streaming, e
-//  streaming e exatamente o que fio de 115200 bps nao aguenta. Pelo fio
-//  passa so o veredito: doze bytes dizendo se ha planta na frente.
+//  DESDE A VERSAO 2 A FOTO TAMBEM PASSA PELO FIO. A v1 servia video por
+//  Wi-Fi, direto da camera para o navegador. Em campo aberto isso deixou
+//  de fazer sentido: o unico acesso e o roteador do celular, e cada placa
+//  a mais na rede e uma placa a mais para achar o roteador, pegar IP e
+//  cair. Com a foto no fio, a camera nao precisa de radio nenhum - o
+//  celular so conversa com o vaso, e o vaso busca a foto pela UART.
+//
+//  O preco e tempo: 115200 bps entregam ~11 kB/s, e uma VGA em JPEG tem
+//  de 20 a 30 kB. Dois a tres segundos por foto. Para um botao de "tirar
+//  foto", e aceitavel; para video, nao seria - e video deixou de existir.
 //
 //  FORMATO DO QUADRO
 //
@@ -45,9 +52,15 @@ namespace Enlace {
 
 static const uint8_t PREAMBULO_A = 0xA5;
 static const uint8_t PREAMBULO_B = 0x5A;
-static const uint8_t VERSAO      = 1;
+// VERSAO 2: quadros de foto e carga maxima de 200 bytes. Placas com
+// versoes diferentes se recusam mutuamente em vez de se entenderem pela
+// metade - vereditos passando e fotos falhando seria o pior diagnostico.
+static const uint8_t VERSAO = 2;
 
-static const uint8_t CARGA_MAX  = 64;
+// 200 e nao 64 por causa da foto: com 64, cada quadro carregaria 60 bytes
+// de imagem e 11 de moldura, 18% de desperdicio. Com 200, sao 196 e 11,
+// menos de 6%. LEN e um byte, entao o teto duro seria 255.
+static const uint8_t CARGA_MAX  = 200;
 static const uint8_t CABECALHO  = 5;  // A5 5A VER TIPO LEN
 static const uint8_t QUADRO_MAX = CABECALHO + CARGA_MAX + 2;
 
@@ -58,9 +71,41 @@ enum Tipo : uint8_t {
   TIPO_PONG          = 0x02,  // cam  -> vaso identificacao e uptime
   TIPO_PEDE_VEREDITO = 0x10,  // vaso -> cam  "olha e me diz"
   TIPO_VEREDITO      = 0x11,  // cam  -> vaso resultado da classificacao
-  TIPO_ANUNCIA_IP    = 0x20,  // cam  -> vaso IP do stream, em ASCII
-  TIPO_CONFIG        = 0x30,  // vaso -> cam  ajusta cadencia e limiar
-  TIPO_LOG           = 0x7F   // cam  -> vaso texto livre de diagnostico
+  // 0x20 era TIPO_ANUNCIA_IP, da v1: a camera anunciava o IP do video.
+  // Reservado - nao reaproveitar, para uma placa velha nunca confundir.
+  TIPO_CONFIG      = 0x30,  // vaso -> cam  ajusta cadencia e limiar
+  TIPO_PEDE_FOTO   = 0x40,  // vaso -> cam  "tira uma foto e me manda"
+  TIPO_FOTO_INICIO = 0x41,  // cam  -> vaso tamanho, largura, altura
+  TIPO_FOTO_PEDACO = 0x42,  // cam  -> vaso deslocamento + bytes do JPEG
+  TIPO_FOTO_FIM    = 0x43,  // cam  -> vaso tamanho total + CRC da imagem
+  TIPO_FOTO_ERRO   = 0x44,  // cam  -> vaso codigo + texto
+  TIPO_LOG         = 0x7F   // cam  -> vaso texto livre de diagnostico
+};
+
+// ---- Cargas da foto ---------------------------------------------------
+//
+//  INICIO (10 B) - tamanho u32 | largura u16 | altura u16 | ms captura u16
+//  PEDACO (4+n)  - deslocamento u32 | ate FOTO_PEDACO_MAX bytes do JPEG
+//  FIM    (6 B)  - tamanho u32 | CRC16 do JPEG inteiro
+//  ERRO   (1+n)  - codigo u8 | texto
+//
+//  O DESLOCAMENTO EM CADA PEDACO e o que torna perda detectavel. Cada
+//  quadro ja tem CRC proprio, entao um pedaco corrompido morre sozinho no
+//  receptor - e sem deslocamento, o vaso juntaria os que sobraram numa
+//  imagem mais curta e sem aviso. Com ele, o buraco aparece na hora.
+//
+//  O CRC DO FIM cobre o que o CRC por quadro nao cobre: a chance de 1 em
+//  65 mil de um quadro corrompido passar no CRC16 dele. Numa foto de 150
+//  quadros essa chance deixa de ser desprezivel; no JPEG inteiro, volta a
+//  ser.
+static const uint8_t FOTO_INICIO_BYTES = 10;
+static const uint8_t FOTO_FIM_BYTES    = 6;
+static const uint8_t FOTO_PEDACO_MAX   = CARGA_MAX - 4;
+
+enum ErroFoto : uint8_t {
+  FOTO_ERRO_SEM_CAMERA = 1,  // o sensor nao iniciou
+  FOTO_ERRO_CAPTURA    = 2,  // esp_camera_fb_get devolveu nada
+  FOTO_ERRO_FORMATO    = 3   // quadro que nao e JPEG
 };
 
 struct Quadro {

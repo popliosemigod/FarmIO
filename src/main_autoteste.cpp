@@ -106,7 +106,7 @@ static void testaEnlace() {
   rec.reinicia();
   rec.empurra(0xA5);
   rec.empurra(0x5A);
-  rec.empurra(0x01);
+  rec.empurra(Enlace::VERSAO);
   rec.empurra(0x11);
   rec.empurra(0x0C);  // promete 12 bytes que nunca vem inteiros
   for (int i = 0; i < 5; i++) rec.empurra(0xFF);
@@ -149,6 +149,109 @@ static void testaEnlace() {
   const Enlace::Contadores& c = rec.contadores();
   Serial.printf("  contadores: ok=%lu crc=%lu lixo=%lu\n", (unsigned long)c.quadrosOk,
                 (unsigned long)c.crcErrado, (unsigned long)c.bytesDescartados);
+}
+
+// ---------------------------------------------------------------------
+//  1b. Foto pelo fio
+//
+//  A camera nao esta ligada na bancada, entao o que se ensaia aqui e o
+//  protocolo: o quadro de 200 bytes que a versao 2 trouxe, e a conta dos
+//  deslocamentos. A mesma aritmetica da camera (fatiar) e do vaso
+//  (remontar e conferir) roda de ponta a ponta sobre um "JPEG" sintetico.
+// ---------------------------------------------------------------------
+static void testaFoto() {
+  Serial.println(F("\n--- 1b. foto pelo fio (protocolo v2) ---"));
+
+  // Quadro de carga maxima: e o tamanho novo, e o que mais importa cobrir.
+  uint8_t carga[Enlace::CARGA_MAX];
+  for (int i = 0; i < Enlace::CARGA_MAX; i++) carga[i] = (uint8_t)(i * 37 + 11);
+  uint8_t quadro[Enlace::QUADRO_MAX];
+  const size_t n =
+      Enlace::monta(Enlace::TIPO_FOTO_PEDACO, carga, Enlace::CARGA_MAX, quadro, sizeof(quadro));
+  confere("monta quadro de 200 bytes de carga", n == (size_t)Enlace::QUADRO_MAX);
+
+  Enlace::Receptor rec;
+  Enlace::Quadro q;
+  for (size_t i = 0; i < n; i++) rec.empurra(quadro[i]);
+  const bool volta = rec.proximo(q) && q.n == Enlace::CARGA_MAX && memcmp(q.carga, carga, q.n) == 0;
+  confere("quadro de 200 bytes volta identico", volta);
+
+  // Varredura de bit unico no quadro GRANDE: o CRC16 tem de pegar todos
+  // tambem com 207 bytes, nao so com os 19 do veredito.
+  uint8_t sujo[Enlace::QUADRO_MAX];
+  int recusados = 0, total = 0;
+  for (size_t i = 0; i < n; i++) {
+    for (int b = 0; b < 8; b++) {
+      Enlace::Receptor rr;
+      memcpy(sujo, quadro, n);
+      sujo[i] ^= (uint8_t)(1 << b);
+      for (size_t k = 0; k < n; k++) rr.empurra(sujo[k]);
+      Enlace::Quadro qq;
+      total++;
+      if (!rr.proximo(qq)) recusados++;
+    }
+  }
+  Serial.printf("  varredura de bit unico no quadro de 207 B: %d de %d recusados\n", recusados,
+                total);
+  confere("nenhum quadro grande de um bit trocado passa", recusados == total);
+
+  // Uma foto de ponta a ponta: fatia como a camera, remonta como o vaso.
+  const uint32_t TAM = 5000;  // nao multiplo de 196, para exercitar o ultimo pedaco
+  uint8_t* img       = (uint8_t*)malloc(TAM);
+  uint8_t* dest      = (uint8_t*)malloc(TAM);
+  if (!img || !dest) {
+    confere("memoria para a foto sintetica", false);
+    free(img);
+    free(dest);
+    return;
+  }
+  uint32_t sem = 777;
+  for (uint32_t i = 0; i < TAM; i++) {
+    sem    = sem * 1103515245u + 12345u;
+    img[i] = (uint8_t)(sem >> 16);
+  }
+  const uint16_t crcImg = Enlace::crc16(img, TAM);
+
+  // pulaPedaco < 0: transferencia limpa. >= 0: aquele pedaco "morre no fio".
+  for (int pulaPedaco = -1; pulaPedaco <= 3; pulaPedaco += 4) {
+    Enlace::Receptor r;
+    uint32_t recebido = 0;
+    bool buraco = false, fimOk = false;
+    int pedacos = 0;
+
+    for (uint32_t desloc = 0; desloc < TAM; desloc += Enlace::FOTO_PEDACO_MAX) {
+      uint32_t k = TAM - desloc;
+      if (k > Enlace::FOTO_PEDACO_MAX) k = Enlace::FOTO_PEDACO_MAX;
+      uint8_t c[Enlace::CARGA_MAX];
+      Enlace::poe32(c, desloc);
+      memcpy(c + 4, img + desloc, k);
+      const size_t t =
+          Enlace::monta(Enlace::TIPO_FOTO_PEDACO, c, (uint8_t)(4 + k), quadro, sizeof(quadro));
+      if (pedacos++ == pulaPedaco) continue;  // este nunca chega
+      for (size_t i = 0; i < t; i++) r.empurra(quadro[i]);
+      Enlace::Quadro qq;
+      while (r.proximo(qq)) {
+        const uint32_t d = Enlace::pega32(qq.carga);
+        if (d != recebido) {  // a mesma regra do vaso: fora de ordem e buraco
+          buraco = true;
+          continue;
+        }
+        memcpy(dest + recebido, qq.carga + 4, qq.n - 4);
+        recebido += qq.n - 4;
+      }
+    }
+    fimOk = !buraco && recebido == TAM && Enlace::crc16(dest, TAM) == crcImg;
+
+    if (pulaPedaco < 0) {
+      Serial.printf("  foto de %lu B em %d pedacos: %lu B remontados\n", (unsigned long)TAM,
+                    pedacos, (unsigned long)recebido);
+      confere("foto limpa remonta byte a byte e bate o CRC", fimOk);
+    } else {
+      confere("pedaco perdido e detectado, nao remendado", buraco && !fimOk);
+    }
+  }
+  free(img);
+  free(dest);
 }
 
 // ---------------------------------------------------------------------
@@ -394,6 +497,7 @@ static void roda() {
   Serial.println(F("====================================================="));
 
   testaEnlace();
+  testaFoto();
 
   if (montaBanco()) {
     mede(Visao::PESOS_PADRAO, "4. acerto dos pesos ATUAIS (os que estao no firmware)");

@@ -1,50 +1,43 @@
 // =====================================================================
 //  FarmIO - main_cam.cpp
-//  Firmware da ESP32-CAM (AI-Thinker). Faz duas coisas independentes:
+//  Firmware da ESP32-CAM (AI-Thinker). Tudo pelo fio, nada pelo radio:
 //
-//    pelo fio   responde ao vaso: "estou viva" e "tem planta na frente"
-//    pelo radio serve o video MJPEG em http://<ip>:81/stream
+//    veredito  "tem planta na frente?" - doze bytes, a cada 10 s
+//    foto      um JPEG inteiro, so quando o app pede
 //
-//  AS DUAS NAO PODEM ATRAPALHAR UMA A OUTRA. O video roda no servidor
-//  HTTP do IDF, que vive na propria tarefa do FreeRTOS; o enlace roda no
-//  loop() do Arduino. Se o video estivesse no mesmo loop, um cliente
-//  lento segurando o socket travaria a resposta ao vaso, o vaso veria
-//  camera muda e pulsaria o reset - a camera reiniciaria por causa de um
-//  navegador aberto. Tarefa separada e o que impede isso.
+//  POR QUE A CAMERA NAO TEM MAIS WI-FI. Ate a versao 0.2 ela servia
+//  video MJPEG direto para o navegador. Em campo aberto isso deixou de
+//  fazer sentido, por tres razoes:
 //
-//  POR QUE JPEG E NAO RGB565 DIRETO DO SENSOR. O classificador quer
-//  RGB565, mas o sensor so entrega um formato por vez, e RGB565 continuo
-//  em QVGA nao cabe no barramento junto com o streaming. Entao o sensor
-//  fica em JPEG - que e o que o video quer - e uma vez a cada dez
-//  segundos um unico quadro e decodificado para RGB565 em 160x120, so
-//  para classificar. Decodificar um quadro a cada dez custa menos que
-//  transmitir todos em RGB565.
+//    1. O unico acesso e o roteador do celular. Cada placa a mais na
+//       rede e mais uma que precisa acha-lo, pegar IP e sobreviver as
+//       quedas dele - e o celular teria de alcancar as duas.
+//    2. Video continuo mantem sensor e radio acesos o tempo todo, e o
+//       projeto vive numa porta USB.
+//    3. Ninguem assiste um vaso. O que se quer e uma foto na hora de
+//       conferir - e uma foto cabe no fio.
+//
+//  Sem radio, a camera tambem nao precisa de credencial nenhuma: o
+//  secrets.h deixou de ser assunto dela.
+//
+//  POR QUE VGA E ESCALA 1/4. O classificador quer 160x120. Com PSRAM, o
+//  sensor captura VGA (640x480), que e o tamanho bom para a foto, e o
+//  decodificador JPEG entrega 1/4 disso direto: exatamente 160x120. Um
+//  tamanho so de quadro serve os dois usos, sem trocar a configuracao do
+//  sensor no meio do caminho.
 //
 //  Gravar:  pio run -e cam -t upload
-//  (com o adaptador USB-TTL no header de gravacao e GPIO0 no GND;
-//   o enlace com o vaso usa GPIO14/15 e nao precisa ser desligado)
+//  (adaptador USB-TTL no header de gravacao - GPIO1/GPIO3 -, GPIO0 no
+//   GND durante o reset. O enlace usa GPIO14/15 e nao precisa sair.)
 // =====================================================================
 #include <Arduino.h>
-#include <WiFi.h>
 #include "esp_camera.h"
-#include "esp_http_server.h"
-#include "esp_timer.h"
+#include "img_converters.h"
 
 #include "config.h"
 #include "farmio_enlace.h"
 #include "farmio_visao.h"
 
-#if __has_include("secrets.h")
-#include "secrets.h"
-#endif
-#ifndef FARMIO_WIFI_SSID
-#define FARMIO_WIFI_SSID ""
-#define FARMIO_WIFI_PASS ""
-#endif
-
-// A camera nao tem AP proprio: sem credencial ela simplesmente nao serve
-// video. O enlace com o vaso continua funcionando - a deteccao de planta
-// nao depende de rede nenhuma, e essa e a razao de ela morar no fio.
 static HardwareSerial Enl(1);
 static Enlace::Receptor g_rec;
 
@@ -52,7 +45,11 @@ static bool g_cameraOk       = false;
 static uint8_t* g_rgb        = nullptr;  // 160x120 RGB565 para o classificador
 static uint32_t g_ultimoPing = 0;
 static uint32_t g_quadros    = 0;
+static uint32_t g_fotos      = 0;
 static Visao::Parametros g_par;
+static jpg_scale_t g_escala = JPG_SCALE_4X;
+static uint16_t g_largura   = 640;
+static uint16_t g_altura    = 480;
 
 static const int RGB_LARG     = 160;
 static const int RGB_ALT      = 120;
@@ -88,19 +85,31 @@ static bool iniciaCamera() {
   // faz quando o orcamento de USB aperta (docs/06-energia-usb.md).
   c.xclk_freq_hz = 20000000;
   c.pixel_format = PIXFORMAT_JPEG;
-  c.frame_size   = FRAMESIZE_QVGA;  // 320x240
-  c.jpeg_quality = 12;              // 10..63; menor = melhor e maior
   c.grab_mode    = CAMERA_GRAB_LATEST;
 
+  // Qualidade 14 (10..63, menor = melhor e maior): uma VGA fica em 20 a
+  // 30 kB. E o numero que decide quanto a foto demora no fio - cada 11 kB
+  // e um segundo a 115200 bps.
+  c.jpeg_quality = 14;
+
   if (psramFound()) {
+    c.frame_size  = FRAMESIZE_VGA;  // 640x480
     c.fb_location = CAMERA_FB_IN_PSRAM;
     c.fb_count    = 2;
+    g_escala      = JPG_SCALE_4X;  // 640x480 / 4 = 160x120
+    g_largura     = 640;
+    g_altura      = 480;
   } else {
-    // Sem PSRAM nao ha dois buffers de QVGA. Continua funcionando, com
-    // um buffer so e taxa menor - a deteccao de planta nao se importa.
+    // Sem PSRAM nao cabe VGA. QVGA com escala 1/2 tambem da 160x120.
+    // Ate a v0.2 este ramo usava QQVGA com escala 1/2, o que dava 80x60
+    // num buffer que o classificador le como 160x120 - nunca mordeu
+    // porque a AI-Thinker tem PSRAM, mas era leitura fora do quadro.
+    c.frame_size  = FRAMESIZE_QVGA;  // 320x240
     c.fb_location = CAMERA_FB_IN_DRAM;
     c.fb_count    = 1;
-    c.frame_size  = FRAMESIZE_QQVGA;
+    g_escala      = JPG_SCALE_2X;  // 320x240 / 2 = 160x120
+    g_largura     = 320;
+    g_altura      = 240;
   }
 
   const esp_err_t e = esp_camera_init(&c);
@@ -124,50 +133,16 @@ static bool iniciaCamera() {
 }
 
 // ---------------------------------------------------------------------
-//  Servidor de video - tarefa propria do IDF, fora do loop()
+//  Enlace
 // ---------------------------------------------------------------------
-static const char* LIMITE = "farmioquadro";
-
-static esp_err_t handlerStream(httpd_req_t* req) {
-  char tipo[80];
-  snprintf(tipo, sizeof(tipo), "multipart/x-mixed-replace;boundary=%s", LIMITE);
-  if (httpd_resp_set_type(req, tipo) != ESP_OK) return ESP_FAIL;
-  httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
-
-  char cab[96];
-  for (;;) {
-    camera_fb_t* fb = esp_camera_fb_get();
-    if (!fb) return ESP_FAIL;
-
-    const int n = snprintf(cab, sizeof(cab),
-                           "\r\n--%s\r\nContent-Type: image/jpeg\r\nContent-Length: %u\r\n\r\n",
-                           LIMITE, (unsigned)fb->len);
-    esp_err_t r = httpd_resp_send_chunk(req, cab, n);
-    if (r == ESP_OK) r = httpd_resp_send_chunk(req, (const char*)fb->buf, fb->len);
-    esp_camera_fb_return(fb);
-    if (r != ESP_OK) break;  // navegador fechou a aba
-  }
-  return ESP_OK;
+static void envia(uint8_t tipo, const uint8_t* carga, uint8_t n) {
+  uint8_t q[Enlace::QUADRO_MAX];
+  const size_t t = Enlace::monta(tipo, carga, n, q, sizeof(q));
+  if (t) Enl.write(q, t);
 }
 
-static void iniciaServidorVideo() {
-  httpd_config_t cfg   = HTTPD_DEFAULT_CONFIG();
-  cfg.server_port      = 81;
-  cfg.ctrl_port        = 32769;
-  cfg.max_uri_handlers = 2;
-
-  static httpd_handle_t srv = nullptr;
-  if (httpd_start(&srv, &cfg) != ESP_OK) {
-    Serial.println("[cam] servidor de video nao subiu");
-    return;
-  }
-  httpd_uri_t u;
-  memset(&u, 0, sizeof(u));
-  u.uri     = "/stream";
-  u.method  = HTTP_GET;
-  u.handler = handlerStream;
-  httpd_register_uri_handler(srv, &u);
-  Serial.println("[cam] video em :81/stream");
+static void enviaErroFoto(uint8_t codigo) {
+  envia(Enlace::TIPO_FOTO_ERRO, &codigo, 1);
 }
 
 // ---------------------------------------------------------------------
@@ -187,10 +162,9 @@ static bool classifica(Enlace::CargaVeredito& fora) {
   }
 
   const uint32_t t0 = millis();
-  // JPG_SCALE_2X leva a QVGA de 320x240 para 160x120, que e exatamente a
-  // grade que o classificador quer com passo 2. Decodificar ja no
-  // tamanho certo evita uma reamostragem depois.
-  const bool ok = jpg2rgb565(fb->buf, fb->len, g_rgb, JPG_SCALE_2X);
+  // Decodificar ja no tamanho que o classificador quer evita uma
+  // reamostragem depois - ver POR QUE VGA E ESCALA 1/4, no topo.
+  const bool ok = jpg2rgb565(fb->buf, fb->len, g_rgb, g_escala);
   esp_camera_fb_return(fb);
   if (!ok) {
     fora.flags |= Enlace::FLAG_FALHA_CAM;
@@ -217,18 +191,61 @@ static bool classifica(Enlace::CargaVeredito& fora) {
 }
 
 // ---------------------------------------------------------------------
-//  Enlace
+//  Foto: um JPEG inteiro, em pedacos, pelo fio
+//
+//  Esta funcao bloqueia o loop da camera por 2 a 3 s, e isso e de
+//  proposito: a camera nao tem mais nada a fazer enquanto transmite, e o
+//  vaso sabe que ela esta ocupada - ele mesmo pediu, e para de perguntar
+//  ate a foto terminar.
 // ---------------------------------------------------------------------
-static void envia(uint8_t tipo, const uint8_t* carga, uint8_t n) {
-  uint8_t q[Enlace::QUADRO_MAX];
-  const size_t t = Enlace::monta(tipo, carga, n, q, sizeof(q));
-  if (t) Enl.write(q, t);
-}
+static void enviaFoto() {
+  if (!g_cameraOk) {
+    enviaErroFoto(Enlace::FOTO_ERRO_SEM_CAMERA);
+    return;
+  }
 
-static void anunciaIp() {
-  if (WiFi.status() != WL_CONNECTED) return;
-  const String ip = WiFi.localIP().toString();
-  envia(Enlace::TIPO_ANUNCIA_IP, (const uint8_t*)ip.c_str(), (uint8_t)ip.length());
+  // O primeiro quadro da fila pode ser velho: com dois buffers, o driver
+  // entrega o ultimo quadro COMPLETO, que pode ter sido capturado antes
+  // de alguem mexer na cena. Um descartado custa ~70 ms e garante que a
+  // foto e do instante do pedido.
+  camera_fb_t* velho = esp_camera_fb_get();
+  if (velho) esp_camera_fb_return(velho);
+
+  const uint32_t t0 = millis();
+  camera_fb_t* fb   = esp_camera_fb_get();
+  if (!fb) {
+    enviaErroFoto(Enlace::FOTO_ERRO_CAPTURA);
+    return;
+  }
+  if (fb->format != PIXFORMAT_JPEG) {
+    esp_camera_fb_return(fb);
+    enviaErroFoto(Enlace::FOTO_ERRO_FORMATO);
+    return;
+  }
+  const uint16_t msCaptura = (uint16_t)(millis() - t0);
+
+  uint8_t c[Enlace::CARGA_MAX];
+  Enlace::poe32(c, (uint32_t)fb->len);
+  Enlace::poe16(c + 4, (uint16_t)fb->width);
+  Enlace::poe16(c + 6, (uint16_t)fb->height);
+  Enlace::poe16(c + 8, msCaptura);
+  envia(Enlace::TIPO_FOTO_INICIO, c, Enlace::FOTO_INICIO_BYTES);
+
+  for (uint32_t desloc = 0; desloc < fb->len; desloc += Enlace::FOTO_PEDACO_MAX) {
+    uint32_t n = fb->len - desloc;
+    if (n > Enlace::FOTO_PEDACO_MAX) n = Enlace::FOTO_PEDACO_MAX;
+    Enlace::poe32(c, desloc);
+    memcpy(c + 4, fb->buf + desloc, n);
+    envia(Enlace::TIPO_FOTO_PEDACO, c, (uint8_t)(4 + n));
+  }
+
+  Enlace::poe32(c, (uint32_t)fb->len);
+  Enlace::poe16(c + 4, Enlace::crc16(fb->buf, fb->len));
+  envia(Enlace::TIPO_FOTO_FIM, c, Enlace::FOTO_FIM_BYTES);
+
+  Serial.printf("[cam] foto %lu: %ux%u, %u B, captura em %u ms\n", (unsigned long)++g_fotos,
+                fb->width, fb->height, (unsigned)fb->len, msCaptura);
+  esp_camera_fb_return(fb);
 }
 
 static void trata(const Enlace::Quadro& q) {
@@ -238,16 +255,15 @@ static void trata(const Enlace::Quadro& q) {
     case Enlace::TIPO_PING: {
       Enlace::CargaPong p;
       p.major    = 0;
-      p.minor    = 2;
+      p.minor    = 3;
       p.uptimeS  = millis() / 1000UL;
-      p.largura  = RGB_LARG;
-      p.altura   = RGB_ALT;
+      p.largura  = g_largura;
+      p.altura   = g_altura;
       p.temPsram = psramFound() ? 1 : 0;
       p.fps      = 0;
       uint8_t c[Enlace::PONG_BYTES];
       Enlace::serializa(p, c);
       envia(Enlace::TIPO_PONG, c, Enlace::PONG_BYTES);
-      anunciaIp();
       break;
     }
 
@@ -259,6 +275,8 @@ static void trata(const Enlace::Quadro& q) {
       envia(Enlace::TIPO_VEREDITO, c, Enlace::VEREDITO_BYTES);
       break;
     }
+
+    case Enlace::TIPO_PEDE_FOTO: enviaFoto(); break;
 
     case Enlace::TIPO_CONFIG: {
       // O vaso e o dono dos limiares: eles vivem no config.h dele e sao
@@ -289,6 +307,10 @@ void setup() {
   pinMode(CAM_PIN_LED_VERMELHO, OUTPUT);
   digitalWrite(CAM_PIN_LED_VERMELHO, HIGH);  // ativo em nivel baixo: apagado
 
+  // A camera so recebe pedidos curtos, entao a fila de recepcao padrao
+  // basta. A de TRANSMISSAO e que importa, e o write() bloqueia quando
+  // ela enche - o que, durante uma foto, e exatamente o comportamento
+  // certo: a camera anda no ritmo do fio.
   Enl.begin(ENLACE_BAUD, SERIAL_8N1, CAM_PIN_ENLACE_RX, CAM_PIN_ENLACE_TX);
 
   g_par               = Visao::Parametros::padrao();
@@ -302,14 +324,9 @@ void setup() {
   g_cameraOk = iniciaCamera();
   g_rgb      = (uint8_t*)(psramFound() ? ps_malloc(RGB_BYTES) : malloc(RGB_BYTES));
 
-  Serial.printf("[cam] camera %s | psram %s | buffer %s\n", g_cameraOk ? "ok" : "FALHOU",
-                psramFound() ? "sim" : "nao", g_rgb ? "ok" : "FALHOU");
-
-  if (strlen(FARMIO_WIFI_SSID) > 0) {
-    WiFi.mode(WIFI_STA);
-    WiFi.setHostname("farmio-cam");
-    WiFi.begin(FARMIO_WIFI_SSID, FARMIO_WIFI_PASS);
-  }
+  Serial.printf("[cam] camera %s | psram %s | %ux%u | buffer %s | sem radio\n",
+                g_cameraOk ? "ok" : "FALHOU", psramFound() ? "sim" : "nao", g_largura, g_altura,
+                g_rgb ? "ok" : "FALHOU");
 }
 
 void loop() {
@@ -317,22 +334,6 @@ void loop() {
   while (Enl.available()) g_rec.empurra((uint8_t)Enl.read());
   Enlace::Quadro q;
   while (g_rec.proximo(q)) trata(q);
-
-  // ---- Rede: maquina de estado, nunca laco de espera ------------------
-  static bool online    = false;
-  static bool videoNoAr = false;
-  const bool conectado  = (WiFi.status() == WL_CONNECTED);
-  if (conectado && !online) {
-    online = true;
-    Serial.printf("[cam] http://%s:81/stream\n", WiFi.localIP().toString().c_str());
-    if (!videoNoAr) {
-      iniciaServidorVideo();
-      videoNoAr = true;
-    }
-    anunciaIp();
-  } else if (!conectado && online) {
-    online = false;
-  }
 
   // ---- Camera que nao subiu: tenta de novo, sem travar o loop ---------
   static uint32_t proximaTentativa = 0;
@@ -345,5 +346,5 @@ void loop() {
   const bool enlaceVivo = g_ultimoPing && (millis() - g_ultimoPing) < 30000;
   digitalWrite(CAM_PIN_LED_VERMELHO, enlaceVivo ? LOW : HIGH);
 
-  delay(2);  // devolve a CPU para a tarefa do video
+  delay(1);  // devolve a CPU para a tarefa ociosa, que alimenta o watchdog
 }

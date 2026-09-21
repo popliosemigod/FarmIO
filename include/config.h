@@ -303,6 +303,22 @@
 #define BOMBA_EM_5V      0
 #define ENERGIA_BOMBA_MA 350  // so vale quando BOMBA_EM_5V
 
+// A BOMBA TEM FONTE PROPRIA. Decisao de bancada de 18/09/2026: a RS-385
+// passa a ser alimentada em 7 a 9 V por uma fonte separada, e nao pela
+// USB que alimenta a logica. Com isso:
+//
+//   - a USB deixa de pagar a corrente da bomba, entao ela sai do
+//     orcamento de energia e deixa de ser bloqueada por ele;
+//   - a camera pode capturar com a bomba girando, porque os dois picos
+//     ja nao disputam a mesma porta.
+//
+// O QUE A FONTE SEPARADA EXIGE NA MONTAGEM: GND comum entre a fonte da
+// bomba, o driver e o ESP32-C3. O IN1 do driver e referenciado ao GND do
+// C3; sem o terra comum o nivel logico flutua e a bomba liga sozinha.
+//
+// 0 volta ao modelo antigo, em que a bomba dividiria a porta USB.
+#define BOMBA_FONTE_SEPARADA 1
+
 // =====================================================================
 //  LIMIARES DOS SENSORES
 //
@@ -325,6 +341,31 @@
 #define NIVEL_VAZIO_ADC 300   // <= isso conta como tanque vazio
 #define NIVEL_CHEIO_ADC 2600  // >= isso conta como 100%
 
+// FAIXA FISICAMENTE POSSIVEL DO ADC. Fora dela, o numero nao e leitura -
+// e sensor desconectado, fio solto ou alimentacao errada.
+//
+// Este bloco existe por causa de um defeito achado em 21/09/2026: com o
+// sensor de solo solto, o pino encostou em 4095 e o firmware classificou
+// isso como "solo extremamente seco - irrigue". O tanque solto, tambem em
+// 4095, virou "100% cheio" - e tanque cheio libera a bomba. Os dois erros
+// apontavam para o mesmo lado: bomba ligada, sem agua, por causa de um fio.
+// Quem impedia era o bloqueio de energia, e so por acaso.
+//
+// Por que estes numeros sao seguros de usar como corte:
+//   solo  - o capacitivo em 3V3 entrega de ~1,2 V (agua) a ~2,8 V (ar):
+//           ADC ~1500 a ~3700. Ele nao encosta em nenhum dos trilhos.
+//   nivel - o pente Funduino em 3V3 sai pelo emissor de um transistor,
+//           entao o maximo fica ~0,7 V abaixo da alimentacao: ~2,6 V, ADC
+//           ~3400. Encostar no teto e defeito. Encostar no chao, nao: e
+//           tanque vazio de verdade, e ja bloqueia a bomba pelo outro lado.
+//
+// O LIMITE DESTA REGRA: ela pega o pino que encosta num trilho, que foi o
+// que a bancada mostrou hoje. Nao pega o pino que flutua no meio da faixa,
+// como a bancada mostrou em 09/09 (solo passeando entre 400 e 800). Para
+// esse caso nao ha regra de software confiavel - ver docs/02.
+#define ADC_PISO_VALIDO 40
+#define ADC_TETO_VALIDO 4050
+
 // Temperatura: acima disso entra em SITUACAO DE RISCO (spec do SmartFarm)
 #define TEMP_ALTA_C 30.0f
 
@@ -339,6 +380,30 @@
 
 #define TELA_RISCO_MS           4000   // quanto tempo a tela de risco interrompe
 #define TELA_RISCO_INTERVALO_MS 30000  // de quanto em quanto ela reaparece
+
+// ---- Bomba acionada pelo app ----------------------------------------
+//  O botao do app NAO e uma chave que fica ligada. E um pedido com prazo,
+//  renovado pela propria pagina enquanto ela estiver aberta:
+//
+//    LEASE - a pagina renova a cada 2 s. Se a renovacao parar - aba
+//            fechada, celular bloqueado, roteador do celular caiu - a
+//            bomba desliga sozinha em 6 s.
+//    MAX   - teto absoluto, renovando ou nao. Em 9 V a RS-385 empurra
+//            algo como 1 litro por minuto: 30 s sao meio litro, o que
+//            ja e muita agua para um vaso.
+//
+//  POR QUE ASSIM, e nao liga/desliga simples: em campo aberto o unico
+//  acesso e o roteador do celular, e ele cai. Uma chave que ficasse
+//  ligada esperando o "desligar" que nunca chega esvaziaria o tanque.
+#define BOMBA_MANUAL_MAX_MS   30000
+#define BOMBA_MANUAL_LEASE_MS 6000
+
+// ---- Foto sob demanda -----------------------------------------------
+//  A foto vem pelo FIO, nao pelo Wi-Fi - ver docs/04. A 115200 bps uma
+//  VGA em JPEG leva de 2 a 3 s, entao o teto de 15 s so estoura quando
+//  algo realmente deu errado.
+#define FOTO_TIMEOUT_MS 15000
+#define FOTO_MAX_BYTES  61440  // 60 kB: VGA com folga; recusa acima disso
 
 #define BOMBA_PASSO_MS 4000  // pulso de irrigacao
 #define BOMBA_DESCANSO_MS \
@@ -394,6 +459,7 @@ struct Leituras {
   uint8_t soloFaixa;  // FaixaSolo
   uint16_t nivelAdc;
   uint8_t tanquePct;  // 0..100
+  bool nivelValido;   // falso quando o ADC do nivel encostou no teto
   bool dhtOk;
   uint16_t dhtFalhas;
   uint32_t atualizadoEm;
@@ -414,7 +480,6 @@ struct Visto {
   uint16_t quadros;
   uint16_t falhas;  // perguntas sem resposta desde o boot
   uint16_t resets;  // quantas vezes o vaso reiniciou a camera
-  char ip[16];      // IP da camera, anunciado por ela mesma
 };
 
 struct EstadoBomba {
@@ -425,6 +490,18 @@ struct EstadoBomba {
   uint32_t tempoTotalMs;  // quanto ja irrigou desde o boot
   uint16_t pulsos;
   const char* bloqueioAtual;  // por que nao esta irrigando, em texto
+
+  // Acionamento pelo app. Contadores SEPARADOS dos do automatico, de
+  // proposito: o pedido era que o botao nao influenciasse a logica do
+  // vaso, e o jeito de garantir isso e o automatico nunca ver estes
+  // numeros. 'ligada' continua valendo para os dois, porque ela descreve
+  // o estado FISICO - e e ele que energia, tela e anel precisam saber.
+  bool manual;
+  uint32_t manualDesde;
+  uint32_t manualAte;         // teto absoluto deste acionamento
+  uint32_t manualRenovadoEm;  // ultima renovacao vinda do app
+  uint32_t manualTotalMs;
+  uint16_t manualAcionamentos;
 };
 
 extern Leituras L;

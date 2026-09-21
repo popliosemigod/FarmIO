@@ -27,6 +27,12 @@
 //
 //  A CAMERA NUNCA MANDA NA BOMBA por padrao - ver BOMBA_EXIGE_PLANTA em
 //  config.h e a razao escrita la.
+//
+//  FOTO SOB DEMANDA. O app pede, o vaso repassa pelo fio, a camera
+//  captura e devolve o JPEG em pedacos de 196 bytes. Enquanto a foto
+//  esta chegando o vaso nao pergunta mais nada a camera - ela esta
+//  ocupada transmitindo, e contar isso como falha acabaria reiniciando a
+//  camera no meio da propria foto.
 // =====================================================================
 #pragma once
 #include <Arduino.h>
@@ -70,6 +76,56 @@ inline uint16_t& falhasSeguidas() {
   return n;
 }
 
+// ---------------------------------------------------------------------
+//  Foto
+// ---------------------------------------------------------------------
+enum EstadoFoto : uint8_t {
+  FOTO_NENHUMA = 0,
+  FOTO_PEDIDA,     // pedido saiu, camera ainda nao respondeu
+  FOTO_RECEBENDO,  // chegou o INICIO, pedacos entrando
+  FOTO_PRONTA,
+  FOTO_ERRO
+};
+
+struct Foto {
+  uint8_t estado;
+  uint8_t* buf;
+  uint32_t total;
+  uint32_t recebido;
+  uint16_t largura, altura;
+  uint16_t msCaptura;
+  uint16_t crc;
+  uint32_t pedidaEm;
+  uint32_t duracaoMs;  // do pedido ate o ultimo byte
+  uint32_t numero;     // quantas fotos ja ficaram prontas
+  const char* erro;
+};
+
+inline Foto& foto() {
+  static Foto f = {FOTO_NENHUMA, nullptr, 0, 0, 0, 0, 0, 0, 0, 0, 0, ""};
+  return f;
+}
+
+inline bool fotoEmCurso() {
+  return foto().estado == FOTO_PEDIDA || foto().estado == FOTO_RECEBENDO;
+}
+
+inline const char* nomeEstadoFoto(uint8_t e) {
+  static const char* const N[] = {"nenhuma", "pedida", "recebendo", "pronta", "erro"};
+  return e <= FOTO_ERRO ? N[e] : "?";
+}
+
+inline void falhaFoto(const char* motivo) {
+  Foto& f = foto();
+  if (f.buf) {
+    free(f.buf);
+    f.buf = nullptr;
+  }
+  f.estado = FOTO_ERRO;
+  f.erro   = motivo;
+  Serial.printf("[foto] falhou: %s\n", motivo);
+}
+
 inline void envia(uint8_t tipo, const uint8_t* carga, uint8_t n) {
   uint8_t q[Enlace::QUADRO_MAX];
   const size_t t = Enlace::monta(tipo, carga, n, q, sizeof(q));
@@ -107,6 +163,12 @@ inline void begin() {
   memset(&V, 0, sizeof(V));
   V.classe = Visao::SEM_PLANTA;
 
+  // 4 kB de fila na recepcao, e nao os 256 B padrao. Durante uma foto os
+  // bytes chegam a ~11 kB/s: 256 B enchem em 22 ms, e um unico redesenho
+  // do OLED leva 25 ms a 400 kHz. Com a fila padrao, a primeira tela
+  // desenhada no meio de uma foto perderia bytes e a foto inteira. 4 kB
+  // dao ~350 ms de folga para o loop se atrasar sem perder nada.
+  porta().setRxBufferSize(4096);
   porta().begin(ENLACE_BAUD, SERIAL_8N1, PIN_CAM_RX, PIN_CAM_TX);
   if (PIN_CAM_RST >= 0) pinMode(PIN_CAM_RST, INPUT);  // dreno aberto em repouso
 
@@ -162,12 +224,77 @@ inline void trata(const Enlace::Quadro& q) {
 
     case Enlace::TIPO_VEREDITO: trataVeredito(q); break;
 
-    case Enlace::TIPO_ANUNCIA_IP: {
-      // A camera anuncia o proprio IP: a pagina do vaso passa a achar o
-      // video sozinha, sem ninguem digitar endereco em /cam?ip=.
-      const uint8_t n = q.n < sizeof(V.ip) - 1 ? q.n : (uint8_t)(sizeof(V.ip) - 1);
-      memcpy(V.ip, q.carga, n);
-      V.ip[n] = 0;
+    case Enlace::TIPO_FOTO_INICIO: {
+      Foto& f = foto();
+      if (f.estado != FOTO_PEDIDA || q.n < Enlace::FOTO_INICIO_BYTES) break;
+      const uint32_t total = Enlace::pega32(q.carga);
+      if (total == 0 || total > FOTO_MAX_BYTES) {
+        falhaFoto("foto maior que FOTO_MAX_BYTES");
+        break;
+      }
+      f.buf = (uint8_t*)malloc(total);
+      if (!f.buf) {
+        falhaFoto("sem memoria para a foto");
+        break;
+      }
+      f.total     = total;
+      f.recebido  = 0;
+      f.largura   = Enlace::pega16(q.carga + 4);
+      f.altura    = Enlace::pega16(q.carga + 6);
+      f.msCaptura = Enlace::pega16(q.carga + 8);
+      f.estado    = FOTO_RECEBENDO;
+      break;
+    }
+
+    case Enlace::TIPO_FOTO_PEDACO: {
+      Foto& f = foto();
+      if (f.estado != FOTO_RECEBENDO || q.n < 5) break;
+      const uint32_t desloc = Enlace::pega32(q.carga);
+      const uint32_t n      = q.n - 4;
+      // Pedaco fora de ordem quer dizer que um quadro morreu no CRC no
+      // caminho. Remendar nao da - o buraco no meio do JPEG quebraria a
+      // imagem sem aviso. Melhor dizer que falhou e deixar pedir de novo.
+      if (desloc != f.recebido) {
+        falhaFoto("pedaco perdido no fio");
+        break;
+      }
+      if (f.recebido + n > f.total) {
+        falhaFoto("camera mandou mais bytes que anunciou");
+        break;
+      }
+      memcpy(f.buf + f.recebido, q.carga + 4, n);
+      f.recebido += n;
+      break;
+    }
+
+    case Enlace::TIPO_FOTO_FIM: {
+      Foto& f = foto();
+      if (f.estado != FOTO_RECEBENDO || q.n < Enlace::FOTO_FIM_BYTES) break;
+      if (f.recebido != f.total || Enlace::pega32(q.carga) != f.total) {
+        falhaFoto("foto chegou incompleta");
+        break;
+      }
+      const uint16_t crc = Enlace::crc16(f.buf, f.total);
+      if (crc != Enlace::pega16(q.carga + 4)) {
+        falhaFoto("CRC da imagem nao confere");
+        break;
+      }
+      f.crc       = crc;
+      f.estado    = FOTO_PRONTA;
+      f.duracaoMs = millis() - f.pedidaEm;
+      f.erro      = "";
+      f.numero++;
+      Serial.printf("[foto] pronta: %ux%u, %lu B em %lu ms\n", f.largura, f.altura,
+                    (unsigned long)f.total, (unsigned long)f.duracaoMs);
+      break;
+    }
+
+    case Enlace::TIPO_FOTO_ERRO: {
+      if (!fotoEmCurso()) break;
+      const uint8_t cod = q.n ? q.carga[0] : 0;
+      falhaFoto(cod == Enlace::FOTO_ERRO_SEM_CAMERA ? "sensor da camera nao iniciou"
+                : cod == Enlace::FOTO_ERRO_CAPTURA  ? "a camera nao conseguiu capturar"
+                                                    : "a camera devolveu um formato inesperado");
       break;
     }
 
@@ -184,6 +311,32 @@ inline void trata(const Enlace::Quadro& q) {
   }
 }
 
+// Pedido vindo do app. Devolve nullptr se o pedido saiu (ou ja havia um
+// em curso), ou o motivo da recusa.
+inline const char* pedeFoto(bool bombaLigada) {
+  if (fotoEmCurso()) return nullptr;
+  if (!V.enlaceOk) return "camera sem enlace";
+  if (!Energia::podeCapturar(bombaLigada)) return "bomba ligada - tente de novo em alguns segundos";
+
+  Foto& f = foto();
+  if (f.buf) {
+    free(f.buf);  // a foto anterior sai da memoria; a pagina ja a mostrou
+    f.buf = nullptr;
+  }
+  f.estado   = FOTO_PEDIDA;
+  f.total    = 0;
+  f.recebido = 0;
+  f.pedidaEm = millis();
+  f.erro     = "";
+
+  // Qualquer pergunta de veredito no ar e esquecida: a resposta ainda e
+  // aceita se chegar, mas o atraso dela nao vai contar como falha.
+  prazo() = 0;
+  envia(Enlace::TIPO_PEDE_FOTO, nullptr, 0);
+  Serial.println("[foto] pedida");
+  return nullptr;
+}
+
 // Chamar todo loop. 'bombaLigada' entra por causa do orcamento de
 // energia: nao se pede quadro com a bomba girando.
 inline void tick(bool bombaLigada) {
@@ -193,6 +346,16 @@ inline void tick(bool bombaLigada) {
   while (receptor().proximo(q)) trata(q);
 
   const uint32_t agora = millis();
+
+  // ---- Foto em curso: so vigia o prazo dela ---------------------------
+  if (fotoEmCurso()) {
+    if (agora - foto().pedidaEm > FOTO_TIMEOUT_MS) {
+      falhaFoto(foto().estado == FOTO_PEDIDA ? "a camera nao respondeu ao pedido"
+                                             : "a foto parou no meio do caminho");
+      proximaPergunta() = agora + 1000;
+    }
+    return;
+  }
 
   // ---- Pergunta no ar que venceu o prazo ------------------------------
   if (prazo() && (int32_t)(agora - prazo()) >= 0) {

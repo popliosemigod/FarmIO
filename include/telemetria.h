@@ -27,6 +27,8 @@
 #include <WiFi.h>
 
 #include "anel.h"
+#include "bomba.h"
+#include "camera.h"
 #include "config.h"
 #include "energia.h"
 #include "farmio_visao.h"
@@ -69,7 +71,11 @@ inline void ajuda() {
   Serial.println(F("    m  mudo"));
   Serial.println(F("    r  repete agora"));
   Serial.println(F("    z  zera os contadores de bomba e camera"));
-  Serial.println(F("    p  pinagem e limiares em uso\n"));
+  Serial.println(F("    p  pinagem e limiares em uso"));
+  Serial.println(F("  ensaio de bancada:"));
+  Serial.println(F("    f  pede uma foto a camera"));
+  Serial.println(F("    +  liga a bomba como o app liga - desliga sozinha em 6 s"));
+  Serial.println(F("    -  desliga a bomba\n"));
 }
 
 inline void pinagem() {
@@ -116,22 +122,36 @@ inline void bloco() {
   Serial.printf("            DHT22 no GPIO%d  |  %u falhas desde o boot\n", PIN_DHT, L.dhtFalhas);
 
   // ---- solo ----
-  Serial.printf("\n  SOLO      ADC %4u de 4095   ->  %s\n", L.soloAdc,
-                SOLO_NOME[L.soloFaixa <= SOLO_INVALIDO ? L.soloFaixa : SOLO_INVALIDO]);
+  Serial.printf("\n  SOLO      ADC %4u de 4095   ->  %s%s\n", L.soloAdc,
+                SOLO_NOME[L.soloFaixa <= SOLO_INVALIDO ? L.soloFaixa : SOLO_INVALIDO],
+                L.soloFaixa == SOLO_INVALIDO ? "   <<< FORA DA FAIXA FISICA: sensor solto?" : "");
   Serial.printf("            capacitivo no GPIO%d  |  seco >=%d  encharcado <=%d\n", PIN_SOLO,
                 SOLO_SECO_ADC, SOLO_ENCHARCADO_ADC);
 
   // ---- tanque ----
-  Serial.printf("\n  TANQUE    ADC %4u de 4095   ->  %3u %%   ", L.nivelAdc, L.tanquePct);
-  barra(L.tanquePct);
-  Serial.println();
+  if (L.nivelValido) {
+    Serial.printf("\n  TANQUE    ADC %4u de 4095   ->  %3u %%   ", L.nivelAdc, L.tanquePct);
+    barra(L.tanquePct);
+    Serial.println();
+  } else {
+    Serial.printf("\n  TANQUE    ADC %4u de 4095   ->  SEM LEITURA   <<< encostado no teto\n",
+                  L.nivelAdc);
+  }
   Serial.printf("            pente no GPIO%d  |  vazio <=%d  cheio >=%d\n", PIN_NIVEL,
                 NIVEL_VAZIO_ADC, NIVEL_CHEIO_ADC);
 
   // ---- bomba ----
-  Serial.printf("\n  BOMBA     %s", B.ligada ? "IRRIGANDO" : "parada   ");
-  Serial.printf("          %u pulsos, %lu s no total\n", B.pulsos,
+  Serial.printf("\n  BOMBA     %s",
+                B.manual ? "LIGADA PELO APP" : (B.ligada ? "IRRIGANDO      " : "parada         "));
+  Serial.printf("    automatico: %u pulsos, %lu s\n", B.pulsos,
                 (unsigned long)(B.tempoTotalMs / 1000UL));
+  if (B.manual) {
+    Serial.printf("            desliga sozinha em %u s, ou 6 s sem o app renovar\n",
+                  Bomba::manualRestanteS());
+  }
+  Serial.printf("            pelo app: %u acionamentos, %lu s  |  fonte %s\n", B.manualAcionamentos,
+                (unsigned long)(B.manualTotalMs / 1000UL),
+                BOMBA_FONTE_SEPARADA ? "propria 7-9 V" : "a mesma da logica");
   if (!B.ligada && B.bloqueioAtual && B.bloqueioAtual[0]) {
     Serial.printf("            bloqueio: %s\n", B.bloqueioAtual);
   }
@@ -154,6 +174,16 @@ inline void bloco() {
   if (V.enlaceOk) {
     Serial.printf("            verde na cena: %u%%   ultimo quadro levou %u ms\n", V.cobertura / 10,
                   V.msCamera);
+  }
+  const Camera::Foto& f = Camera::foto();
+  if (f.estado == Camera::FOTO_PRONTA) {
+    Serial.printf("            foto %lu: %ux%u, %lu B, %lu ms pelo fio\n", (unsigned long)f.numero,
+                  f.largura, f.altura, (unsigned long)f.total, (unsigned long)f.duracaoMs);
+  } else if (f.estado == Camera::FOTO_ERRO) {
+    Serial.printf("            ultima foto falhou: %s\n", f.erro);
+  } else if (Camera::fotoEmCurso()) {
+    Serial.printf("            foto chegando: %lu de %lu B\n", (unsigned long)f.recebido,
+                  (unsigned long)f.total);
   }
 
   // ---- energia ----
@@ -183,15 +213,17 @@ inline void bloco() {
   }
 
   // ---- rede ----
-  Serial.print(F("\n  REDE      "));
+  Serial.printf("\n  REDE      rede propria '%s' em http://", FARMIO_NOME);
+  Serial.print(WiFi.softAPIP());
+  Serial.printf("   (%u conectado%s)\n", WiFi.softAPgetStationNum(),
+                WiFi.softAPgetStationNum() == 1 ? "" : "s");
   if (WiFi.status() == WL_CONNECTED) {
+    Serial.printf("            roteador '%s' em http://", WiFi.SSID().c_str());
     Serial.print(WiFi.localIP());
-    Serial.printf("  em '%s'\n", WiFi.SSID().c_str());
-  } else {
-    Serial.printf("AP '%s' em ", FARMIO_NOME);
-    Serial.println(WiFi.softAPIP());
+    Serial.printf("  (%d dBm)  ou http://%s.local\n", WiFi.RSSI(), FARMIO_NOME);
+  } else if (WiFi.getMode() & WIFI_STA) {
+    Serial.println(F("            roteador do celular: fora do alcance"));
   }
-  if (V.ip[0]) Serial.printf("            video em http://%s:81/stream\n", V.ip);
 
   Serial.println(F("---------------------------------------------------------------------"));
   Serial.println(F("  'h' para os comandos"));
@@ -216,7 +248,7 @@ inline void linha() {
 }
 
 inline void json() {
-  char buf[1100];
+  char buf[Web::JSON_MAX];
   Web::jsonSensores(buf, sizeof(buf));
   Serial.println(buf);
 }
@@ -267,6 +299,20 @@ inline void comandos() {
         V.quadros = V.falhas = V.resets = 0;
         Serial.println(F("  contadores zerados."));
         break;
+      case 'f': {
+        const char* e = Camera::pedeFoto(B.ligada);
+        if (e) Serial.printf("  foto recusada: %s\n", e);
+        break;
+      }
+      case '+': {
+        // Mesmo caminho do botao do app, com os mesmos intertravamentos.
+        // Ninguem renova daqui, entao ela desliga sozinha no fim do prazo
+        // de 6 s: e um pulso de ensaio, nao uma chave.
+        const char* e = Bomba::ligaManual();
+        if (e) Serial.printf("  bomba recusada: %s\n", e);
+        break;
+      }
+      case '-': Bomba::desligaManual("manual: desligada pela serial"); break;
       default: break;  // \r, \n e o resto nao sao comando
     }
   }

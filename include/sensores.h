@@ -45,7 +45,15 @@ inline uint16_t leAdcMedio(uint8_t pino) {
   return (uint16_t)(soma / 8);
 }
 
+// Leitura encostada num trilho do ADC nao e umidade: e sensor solto. Ver
+// ADC_PISO_VALIDO em config.h - ate 21/09/2026 este teste nao existia, e
+// o solo desconectado em 4095 era lido como "extremamente seco, irrigue".
+inline bool adcPlausivel(uint16_t adc) {
+  return adc > ADC_PISO_VALIDO && adc < ADC_TETO_VALIDO;
+}
+
 inline uint8_t faixaDoSolo(uint16_t adc) {
+  if (!adcPlausivel(adc)) return SOLO_INVALIDO;
   if (adc >= SOLO_SECO_ADC) return SOLO_EXTREMAMENTE_BAIXA;
   if (adc >= SOLO_BAIXO_ADC) return SOLO_BAIXA;
   if (adc >= SOLO_ALTO_ADC) return SOLO_ESTAVEL;
@@ -71,6 +79,7 @@ inline void begin() {
   L.temperaturaC = NAN;
   L.umidadeArPct = NAN;
   L.soloFaixa    = SOLO_INVALIDO;
+  L.nivelValido  = false;  // ate a primeira leitura, nao se sabe: bomba parada
   L.dhtOk        = false;
 }
 
@@ -88,9 +97,12 @@ inline void tick() {
   }
 
   if ((int32_t)(agora - proxNivel) >= 0) {
-    proxNivel      = agora + INTERVALO_NIVEL_MS;
-    L.nivelAdc     = filtroNivel.push(leAdcMedio(PIN_NIVEL));
-    L.tanquePct    = porcentagemDoTanque(L.nivelAdc);
+    proxNivel   = agora + INTERVALO_NIVEL_MS;
+    L.nivelAdc  = filtroNivel.push(leAdcMedio(PIN_NIVEL));
+    L.tanquePct = porcentagemDoTanque(L.nivelAdc);
+    // So o TETO invalida o nivel. Chao e tanque vazio de verdade, e tanque
+    // vazio ja bloqueia a bomba - os dois defeitos caem no lado seguro.
+    L.nivelValido  = L.nivelAdc < ADC_TETO_VALIDO;
     L.atualizadoEm = agora;
   }
 
@@ -122,7 +134,10 @@ inline uint8_t avaliaRiscos() {
   if (L.dhtOk && !isnan(L.temperaturaC) && L.temperaturaC > TEMP_ALTA_C) {
     r |= RISCO_TEMPERATURA;
   }
-  if (!L.dhtOk) r |= RISCO_SENSOR_MUDO;
+  // Sensor sem resposta agora cobre os tres: DHT mudo, solo fora da faixa
+  // fisica e nivel encostado no teto. Os tres pedem a mesma acao - olhar
+  // o fio - e o painel da serial diz qual deles e.
+  if (!L.dhtOk || L.soloFaixa == SOLO_INVALIDO || !L.nivelValido) r |= RISCO_SENSOR_MUDO;
   if (L.soloFaixa == SOLO_EXTREMAMENTE_BAIXA) r |= RISCO_SOLO_SECO;
   if (L.soloFaixa == SOLO_EXTREMAMENTE_ALTA) r |= RISCO_SOLO_ENCHARCADO;
   if (L.tanquePct == 0) r |= RISCO_TANQUE_VAZIO;

@@ -54,6 +54,11 @@
 
 namespace Energia {
 
+// A bomba so entra na conta da porta USB se ela beber dessa porta. Com
+// fonte propria (BOMBA_FONTE_SEPARADA), a corrente dela passa por outro
+// fio e nao aparece aqui - nem para bloquear, nem para descontar do anel.
+static const bool BOMBA_NA_USB = (BOMBA_EM_5V != 0) && (BOMBA_FONTE_SEPARADA == 0);
+
 // O teto pode CAIR sozinho em operacao. Se a placa reiniciar por
 // subtensao, a hipotese mais provavel e que a porta entrega menos do que
 // diz - cabo fino, hub barato, porta de teclado. O vaso desce um degrau,
@@ -117,7 +122,7 @@ inline uint16_t anelMa(uint8_t brilho) {
 // ANEL_BRILHO, que o anel obedece.
 inline uint8_t brilhoPermitido(bool cameraViva, bool bombaLigada) {
   int32_t sobra = (int32_t)teto() - (int32_t)margemMa() - (int32_t)baseMa(cameraViva);
-  if (bombaLigada && BOMBA_EM_5V) sobra -= ENERGIA_BOMBA_MA;
+  if (bombaLigada && BOMBA_NA_USB) sobra -= ENERGIA_BOMBA_MA;
   if (sobra <= 0) return 0;
 
   const uint32_t cheio = (uint32_t)ANEL_PIXELS * ENERGIA_PIXEL_MA_CHEIO;
@@ -130,7 +135,12 @@ inline uint8_t brilhoPermitido(bool cameraViva, bool bombaLigada) {
 // sim, ou o motivo do bloqueio em texto. O motivo vai para a tela e para
 // o JSON: bloqueio sem explicacao parece defeito.
 inline const char* bombaBloqueadaPorEnergia(bool cameraViva) {
-#if ENERGIA_FONTE_USB
+#if BOMBA_FONTE_SEPARADA
+  // Fonte propria de 7 a 9 V: a porta USB nao alimenta a bomba, entao nao
+  // ha o que o orcamento dela bloquear.
+  (void)cameraViva;
+  return nullptr;
+#elif ENERGIA_FONTE_USB
 #if !BOMBA_EM_5V
   // Bomba de 12 V numa fonte de 5 V. Nao e questao de corrente.
   return "bomba de 12 V nao roda em USB";
@@ -150,6 +160,9 @@ inline const char* bombaBloqueadaPorEnergia(bool cameraViva) {
 // deteccao de planta nao custam nada, e dois picos somados custam um
 // reinicio por subtensao.
 inline bool podeCapturar(bool bombaLigada) {
+  // Com a bomba em fonte propria os dois picos nao se somam mais na mesma
+  // porta, e a restricao perde a razao de existir.
+  if (BOMBA_FONTE_SEPARADA) return true;
   return !bombaLigada;
 }
 
@@ -158,7 +171,7 @@ inline bool podeCapturar(bool bombaLigada) {
 // dois e o que corrige a tabela do config.h.
 inline uint16_t estimativaMa(bool cameraViva, uint8_t brilho, bool bombaLigada) {
   uint16_t ma = baseMa(cameraViva) + anelMa(brilho);
-  if (bombaLigada && BOMBA_EM_5V) ma += ENERGIA_BOMBA_MA;
+  if (bombaLigada && BOMBA_NA_USB) ma += ENERGIA_BOMBA_MA;
   return ma;
 }
 
