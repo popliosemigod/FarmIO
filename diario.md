@@ -76,6 +76,77 @@ real, o vaso irriga na hora errada — o firmware está correto, os números nã
 
 ---
 
+### 2026-09-21 (noite) — Ensaio de campo com o roteador emulado: dois defeitos que a bancada não mostrava
+
+**Alvo:** provar que o vaso funciona do jeito que vai a campo — só o roteador de um
+celular, ninguém lendo a serial — antes de levar. Os três fios do enlace já estavam
+ligados: o vaso contava 24 quadros da câmera e 0 falhas.
+
+**Como.** O celular não estava disponível. O hotspot móvel do Windows foi
+configurado com o mesmo nome e senha do roteador do celular (os do `secrets.h`, 2,4 GHz,
+WPA2): para o vaso, é a mesma rede. As rotas foram chamadas do PC, na ordem em que
+a página chama. A configuração original do hotspot do PC foi restaurada no fim.
+
+**Primeira rodada, firmware de antes:**
+
+| Verificação | Resultado |
+| --- | --- |
+| vaso entra no roteador | sim, em 50 s, −42 dBm |
+| `GET /` e `GET /sensores` | 200, mas **1,3 a 1,8 s** por resposta |
+| `POST /bomba?acao=ligar` com tanque vazio | 409, "tanque vazio" — recusa certa |
+| `http://farmio-01.local` do PC | resolve |
+| foto pelo app | **falhou**: "pedaço perdido no fio", 0 de 8860 B |
+
+**Defeito 1 — a foto perdia o primeiro pedaço.** O receptor do enlace guarda **um**
+quadro (207 B). O `Camera::tick()` empurrava a UART inteira para dentro dele e só
+depois tirava os quadros. Com veredito, que é um quadro por vez, isso nunca
+aparece. A foto chega em rajada — dezenas de quadros acumulados enquanto o loop
+atende o HTTP —, o receptor transbordava, descartava pela frente e o pedaço 0
+sumia. O autoteste não pegava porque alimentava um quadro de cada vez.
+
+Correção: esvaziar o receptor **a cada byte**, no vaso e na câmera, e o exemplo de
+uso do cabeçalho reescrito. O autoteste ganhou a rajada inteira de uma vez, dos dois
+jeitos: esvaziando a cada byte, remonta 5000 de 5000 B; do jeito antigo, **tem** que
+perder quadro — e perde. Um teste que passa nos dois jeitos não provaria nada.
+
+**Defeito 2 — cada requisição levava 1,3 s.** Primeiro suspeito: o painel da serial
+travando o loop com a USB ligada e ninguém lendo. Descartado com medida: com a porta
+aberta e drenada, continuou em 1,4 s. O ping mostrou a causa — alternava **2 ms e
+1000 ms**. É o modem sleep padrão do Wi-Fi: o C3 só escuta o roteador a cada DTIM.
+Correção: `WiFi.setSleep(false)`. Custa uns 15 mA; `ENERGIA_C3_MA` foi de 80 para
+95 mA e o orçamento continua cabendo.
+
+**Segunda rodada, firmware corrigido:**
+
+| Verificação | Previsto | Medido |
+| --- | --- | --- |
+| ping | < 20 ms | 2 a 10 ms |
+| `GET /sensores` | < 100 ms | 15 a 55 ms |
+| `GET /` (8,6 kB) | < 200 ms | 52 ms |
+| foto pelo app, do botão até a imagem | < 3 s | **5 de 5**, 1,66 a 1,78 s, 6,7 kB, JPEG íntegro |
+| `/foto.jpg` no meio da transferência | não entrega foto pela metade | 404 |
+| roteador some por 40 s | vaso segue vivo, rede própria no ar | sim |
+| roteador volta | vaso reentra sozinho | em **17 s** |
+
+**Uma coisa que o ensaio ensinou sobre o endereço:** quando o roteador volta, o vaso
+ganha **outro IP** (foi de `.69` para `.24`). Não dá para decorar o endereço do
+roteador do celular. `http://farmio-01.local` acompanhou a troca no PC; no celular,
+nem todo Android resolve `.local`. A rede própria `farmio-01`, em `192.168.4.1`,
+continua sendo o caminho garantido — ver o README.
+
+**O que ficou sem ensaio:**
+
+- a rede própria acessada por outro aparelho: o PC não saiu da rede dele para não
+  derrubar a sessão. É o mesmo servidor que respondeu acima;
+- o celular de verdade — `.local` no Android dele e a lista de aparelhos do
+  roteador;
+- a bomba girando: o tanque está vazio, e o bloqueio foi o que se viu;
+- a imagem em si: a lente estava coberta e as fotos saíram pretas. O transporte está
+  provado; o que a câmera enxerga fica para outro ensaio.
+
+**Evidência:** a saída das rotas e do ping está nesta entrada. As fotos pretas não
+foram guardadas — não mostram nada além de que o JPEG chegou inteiro.
+
 ### 2026-09-21 (tarde) — A XIAO substitui a ESP32-CAM, e o classificador encontra o mundo real
 
 **Alvo:** trocar a câmera da ESP32-CAM AI-Thinker pela Seeed XIAO ESP32-S3 Sense,

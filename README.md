@@ -93,11 +93,21 @@ dependem de rede nenhuma**: elas vivem no fio.
 
 | Caminho | Como | Endereço |
 | --- | --- | --- |
-| **rede do vaso** — sempre funciona | no celular, entrar no Wi-Fi `farmio-01` | `http://192.168.4.1` |
-| roteador do celular | ligar o roteador do celular; o vaso entra sozinho | o IP sai na serial; em alguns celulares, `http://farmio-01.local` |
+| **rede do vaso** — sempre funciona | desligar o roteador do celular e entrar no Wi-Fi `farmio-01` | `http://192.168.4.1` |
+| roteador do celular | ligar o roteador do celular; o vaso entra sozinho em até ~1 min | `http://farmio-01.local`, ou o IP de `farmio-01` na lista de aparelhos conectados do roteador |
 
 O roteador do celular precisa estar em **2,4 GHz** e **WPA2** — as placas não
 enxergam 5 GHz, e o erro que aparece é "rede não encontrada", não "senha errada".
+
+**O IP muda.** Cada vez que o roteador do celular é religado, o vaso pode ganhar outro
+endereço. Não adianta anotar o da última vez. Se `farmio-01.local` não abrir no
+celular — nem todo Android resolve `.local` —, o caminho que nunca falha é a rede
+própria: desligar o roteador, entrar em `farmio-01` e abrir `192.168.4.1`. O Android
+avisa que a rede "não tem internet"; é para continuar conectado assim mesmo.
+
+Ensaiado em 21/09/2026 com o roteador emulado: a página responde em ~50 ms, a foto
+chega em ~1,7 s, e o vaso reentra no roteador 17 s depois de ele voltar — ver o
+[diário](diario.md).
 
 ## Consumo de recursos
 
