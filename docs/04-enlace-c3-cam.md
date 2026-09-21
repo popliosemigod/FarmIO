@@ -45,13 +45,38 @@ para vídeo, e vídeo deixou de existir.
 
 ## Ligação física
 
-| ESP32-C3 | | ESP32-CAM | Observação |
+Desde 21/09/2026 a câmera é a **Seeed XIAO ESP32-S3 Sense**, no lugar da
+ESP32-CAM AI-Thinker. O C3 continua sendo o vaso, e o protocolo não mudou uma
+vírgula — só os pinos do lado da câmera.
+
+| ESP32-C3 | | XIAO ESP32-S3 Sense | Observação |
+| --- | --- | --- | --- |
+| GPIO20 (RX) | ← | **D0** (GPIO1, TX) | |
+| GPIO21 (TX) | → | **D1** (GPIO2, RX) | |
+| GND | — | GND | **obrigatório**, e é o erro nº 1 de quem monta |
+| 5V | — | 5V | as duas placas na mesma fonte |
+| GPIO7 | | *não ligado* | a XIAO não tem pino de reset na borda — ver abaixo |
+
+**Por que D0/D1 na XIAO, por eliminação.** D6/D7 (GPIO43/44) são a UART0, e a ROM
+do S3 cospe o log de boot no GPIO43 a cada reinício, mesmo com o console no USB.
+D2 (GPIO3) é strapping. D8–D10 (GPIO7–9) são o SPI do cartão SD na placa Sense.
+Sobram D0 e D1, que não têm função nenhuma na Sense.
+
+**Sem pino de reset.** O EN da XIAO só existe no botão de reset — não há pino na
+borda para o C3 pulsar. O degrau de reset da escada de recuperação continua no
+código do vaso, sem efeito até alguém soldar um fio no botão. Quem segura a câmera
+travada agora é o **watchdog do próprio loop dela**: se o loop ficar 5 s sem voltar,
+o chip reinicia sozinho.
+
+A tabela da AI-Thinker, ambiente `cam-aithinker`, que continua compilando:
+
+| ESP32-C3 | | ESP32-CAM AI-Thinker | Observação |
 | --- | --- | --- | --- |
 | GPIO20 (RX) | ← | GPIO14 (TX) | |
 | GPIO21 (TX) | → | GPIO15 (RX) | GPIO15 é strapping; RX em repouso é alto, o que é o nível correto |
 | GPIO7 | → | RST | dreno aberto, pull-up de 10 kΩ |
-| GND | — | GND | **obrigatório**, e é o erro nº 1 de quem monta |
-| 5V | — | 5V | as duas placas na mesma fonte |
+| GND | — | GND | obrigatório |
+| 5V | — | 5V | |
 
 Três escolhas nessa tabela merecem justificativa.
 
@@ -179,9 +204,26 @@ fato são ensaio de bancada, e entram no [diário](../diario.md) quando acontece
 ## Gravar as duas placas
 
 ```powershell
-pio run -e c3  -t upload            # o vaso, pela USB nativa
-pio run -e cam -t upload            # a câmera, pelo adaptador USB-TTL
+pio run -e c3  -t upload            # o vaso, pelo USB nativo do C3
+pio run -e cam -t upload            # a câmera XIAO, pelo USB-C dela
 ```
 
-A câmera precisa de GPIO0 no GND para entrar em gravação, como sempre. O enlace
-usa GPIO14/15 e **não precisa ser desligado** para isso.
+As duas têm USB nativo e aparecem como `Dispositivo Serial USB`, VID 303A. Para
+saber qual é qual: o C3 tem MAC terminado em `0E:BC`, a XIAO em `DF:61:58` — o
+`esptool flash_id` mostra.
+
+O enlace **não precisa ser desligado** para gravar nenhuma das duas.
+
+## Conferir a câmera sozinha, antes do enlace
+
+Com a XIAO no USB, o console dela aceita três letras:
+
+| Letra | O que faz |
+| --- | --- |
+| `s` | estado: sensor (OV2640 ou OV3660), PSRAM, resolução, contadores |
+| `v` | classifica o que a câmera vê e imprime o veredito |
+| `F` | manda o JPEG para o PC, entre os marcadores `@@FOTO@@` e `@@FIM@@` |
+
+É assim que se confere a câmera antes de confiar no fio — uma coisa de cada vez.
+Foi por esse caminho que saiu o primeiro teste real do classificador; ver
+[docs/05](05-visao-planta.md#o-primeiro-teste-real-um-falso-positivo).

@@ -190,6 +190,43 @@ honesto, a ser recalibrado com foto real no primeiro ensaio com a câmera.
 Enquanto isso não acontecer, **a visão avisa e não manda**: `BOMBA_EXIGE_PLANTA`
 está em 0.
 
+## O primeiro teste real: um falso positivo
+
+Em 21/09/2026 a XIAO ESP32-S3 Sense tirou a primeira foto real do projeto. Não
+havia planta nenhuma na frente — uma parede branca, um carretel de filamento, a
+lateral escura de uma impressora 3D. O classificador respondeu, três vezes
+seguidas:
+
+```
+planta | prob 1000 permil | verde 202 permil | 4 aglomerados
+```
+
+**Falso positivo com confiança máxima**, no primeiro contato com o mundo real. É
+exatamente o risco que a seção anterior descrevia, agora medido.
+
+A foto mostra a causa provável. O sensor, um OV3660, pinta as áreas **escuras** de
+verde-azulado. O ExG normalizado divide pela soma dos canais — é o que o torna
+imune à intensidade da luz —, e é justamente essa divisão que, num pixel escuro,
+transforma um leve tom verde em "muito verde". As partes pretas da impressora,
+com textura e em vários pedaços, parecem folhagem para o modelo.
+
+Os ajustes de fábrica do OV3660 (inverter na vertical, brilho +1, saturação −2)
+acertaram a orientação da foto e **não** removeram o falso positivo.
+
+**Não foi corrigido, e de propósito.** Corrigir com uma foto só seria trocar um
+chute por outro. As hipóteses que valem testar, em ordem:
+
+1. ignorar a cromaticidade de pixel escuro — hoje o piso é soma > 24, baixo demais
+   para este sensor;
+2. retreinar com fotos reais da própria câmera, com e sem planta, tiradas pelo
+   comando `F` do console dela.
+
+Até isso ser feito e medido, `VISAO_CALIBRADA` fica em 0: o app mostra o veredito
+com o aviso de "não calibrado", e o alarme "nenhuma planta à vista" não dispara.
+A visão já não mandava na bomba; agora também não alarma.
+
+As fotos estão em `evidencias/2026-09-21-xiao/`.
+
 ## Filtro temporal
 
 Um quadro isolado não decide nada. Passar a mão na frente da câmera, uma nuvem ou

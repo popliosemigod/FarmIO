@@ -76,6 +76,104 @@ real, o vaso irriga na hora errada — o firmware está correto, os números nã
 
 ---
 
+### 2026-09-21 (tarde) — A XIAO substitui a ESP32-CAM, e o classificador encontra o mundo real
+
+**Alvo:** trocar a câmera da ESP32-CAM AI-Thinker pela Seeed XIAO ESP32-S3 Sense,
+com o C3 continuando como vaso, e deixar o conjunto confiável para montar e levar
+a campo. Ainda não há planta na bancada.
+
+**Identificação da placa, antes de qualquer código.** Apareceu uma porta nova,
+COM13, com VID 303A:1001, que é USB nativo da Espressif. Isso já descartava a
+AI-Thinker, que só fala por um CH340. O `esptool flash_id` confirmou: **ESP32-S3
+(QFN56) rev v0.2, PSRAM embutida de 8 MB, flash de 8 MB, MAC `…:DF:61:58`** — a
+especificação exata da XIAO Sense. O histórico do Windows mostrou que este PC já
+teve quatro CH340 e um FTDI com driver instalado; a ESP32-CAM nunca apareceu porque
+o caminho físico dela não passava dado.
+
+**O que foi feito:**
+
+- **Pinagem da câmera por placa**, como já era a do controlador. `cam` passou a
+  ser a XIAO; `cam-aithinker` continua compilando. O enlace na XIAO usa **D0/D1**,
+  por eliminação: D6/D7 recebem o log de boot da ROM, D2 é strapping, D8–D10 são o
+  SPI do cartão SD na placa Sense.
+- **Watchdog do loop na câmera.** A XIAO não tem pino de reset na borda, então o
+  degrau de reset da escada do vaso deixou de alcançá-la. Se o loop dela ficar 5 s
+  sem voltar, o próprio chip reinicia.
+- **Console de bancada na câmera** — `s` estado, `v` veredito, `F` foto para o PC.
+  Foi o que permitiu testar a câmera sem o enlace, e ver com os próprios olhos o
+  que ela vê.
+
+**Medido na XIAO, pelo console USB:**
+
+| | Previsto | Medido | |
+| --- | --- | --- | --- |
+| Sensor | OV2640 | **OV3660** | ✗ |
+| Foto VGA, qualidade 14 | 20–30 kB | **49,9 kB** — de uma parede | ✗ |
+| Foto VGA, qualidade 18 | — | **13,1–13,5 kB** | |
+| Classificação por quadro | — | **206–210 ms** | |
+| Veredito, cena **sem planta** | sem planta | **"planta", 1000‰, 3 de 3** | ✗✗ |
+
+**Divergência 1 — o classificador errou no primeiro contato com o mundo real, e
+com confiança máxima.** A cena: uma parede branca, um carretel de filamento, a
+lateral escura de uma impressora 3D. Nenhuma planta. O veredito: planta, 1000‰,
+três vezes, com 17–22% da cena contada como verde.
+
+O banco sintético dava 97,9% de acerto. Este diário registrou em 09/09 que *"97,9%
+num banco que eu mesmo gerei mede o gerador tanto quanto o modelo"* e que *"acerto
+de campo é outra medida e ainda não existe"*. Agora ela existe: **uma cena real,
+um erro, confiança total.**
+
+A foto mostra a causa provável. O OV3660 pinta as áreas **escuras** de
+verde-azulado. O ExG normalizado divide pela soma dos canais — é o que o torna
+imune à luz —, e é essa mesma divisão que transforma um tom esverdeado leve, num
+pixel escuro, em "muito verde". O gerador sintético nunca produziu esse defeito de
+sensor, então o modelo nunca aprendeu a desconfiar dele.
+
+Os ajustes de fábrica do OV3660 (vertical invertida, brilho +1, saturação −2)
+acertaram a orientação e **não** removeram o erro.
+
+**Divergência 2 — tamanho de foto duas vezes o estimado.** 49,9 kB contra 20–30 kB,
+e de uma parede, que é a cena que comprime *melhor*. Uma planta tem mais detalhe e
+comprimiria pior: o limite de 60 kB do vaso recusaria justamente a foto que o vaso
+existe para tirar. Corrigido nos dois lados: qualidade 14 → 18 na câmera (13 kB,
+~1,3 s de fio) e limite de 60 → 80 kB no vaso.
+
+**Divergência 3 — o sensor.** Esperava-se OV2640; a XIAO desta remessa veio com
+OV3660. O firmware detecta e aplica os ajustes certos para cada um.
+
+**Decisão: a visão vai para campo marcada como não calibrada.** `VISAO_CALIBRADA`
+entrou em 0. O app e a serial mostram o veredito com o aviso, e o alarme "nenhuma
+planta à vista" fica desligado até a calibração. A visão já não comandava a bomba
+(`BOMBA_EXIGE_PLANTA` = 0); agora também não alarma. **Não foi feito ajuste nenhum
+no modelo** — com uma foto só, seria trocar um chute por outro.
+
+**Verificado de novo, com sensor real:** o sensor de solo, que lia ~2910 de manhã,
+à tarde estava solto e lendo 4095. O painel respondeu **"SEM LEITURA — FORA DA
+FAIXA FÍSICA: sensor solto?"**. O firmware anterior a hoje teria respondido
+"extremamente seco, irrigue".
+
+**Estado para a montagem:**
+
+| Peça | Estado |
+| --- | --- |
+| C3 (vaso) | gravado, lendo DHT22 (26,3 °C), rede própria no ar |
+| XIAO (câmera) | gravada, OV3660 ok, foto e veredito funcionando pelo USB |
+| Enlace C3 ↔ XIAO | **não ligado** — 94 perguntas sem resposta no vaso |
+| Solo | solto (lê 4095) |
+| Nível | seco ou solto (lê 3) — bloqueia a bomba, que é o lado seguro |
+| Bomba | nunca girou |
+| Classificador | **não calibrado**, com um falso positivo medido |
+
+**Próxima entrada esperada:** os três fios do enlace — D0 da XIAO no GPIO20 do C3,
+D1 no GPIO21, GND comum — e a primeira foto chegando no app pelo fio. Depois,
+planta na bancada e as primeiras fotos reais com e sem planta, para o retreino.
+
+**Evidência:** `evidencias/2026-09-21-xiao/` (três fotos: qualidade 14 sem ajuste,
+qualidade 18 sem ajuste, qualidade 18 com ajuste do OV3660 — ficam fora do git, que
+não versiona imagem), saída do console da XIAO e do painel do C3.
+
+---
+
 ### 2026-09-21 — Foto pelo fio, botão da bomba, e o defeito que o bloqueio escondia
 
 **Alvo:** quatro pedidos de uma vez. (1) Trocar o vídeo da câmera por uma foto sob

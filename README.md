@@ -4,9 +4,11 @@
 avisa o que está errado e mostra tudo em três lugares: no display, na página web e
 na serial.
 
-> **Estado: o firmware do vaso roda numa placa real, com DHT22, solo e nível
-> ligados e respondendo.** O que ainda não existe é ensaio com a bomba girando e
-> com a câmera gravada com o firmware do projeto. Os limiares dos sensores são ponto de partida, não
+> **Estado: as duas placas estão gravadas e rodam separadas.** O vaso lê os
+> sensores na bancada; a câmera tira foto e classifica. O que ainda não foi
+> ensaiado: o enlace por fio entre as duas, a bomba girando, e o classificador com
+> planta — que **ainda não é calibrado** e já deu um falso positivo com foto real
+> ([docs/05](docs/05-visao-planta.md#o-primeiro-teste-real-um-falso-positivo)). Os limiares dos sensores são ponto de partida, não
 > medida — ver [calibração](docs/02-hardware-e-pinagem.md#calibração--leia-antes-de-confiar-em-qualquer-leitura).
 
 Este é um projeto do laboratório [**Jaspy**](https://github.com/popliosemigod/Jaspy),
@@ -36,7 +38,7 @@ repositório próprio; este é o do FarmIO.
 | Papel | Placa | O que roda nela |
 | --- | --- | --- |
 | O vaso | **ESP32-C3** (4 MB, USB nativo) | sensores, bomba, tela, anel, página |
-| O olho | **ESP32-CAM** AI-Thinker | captura, classificação, vídeo |
+| O olho | **XIAO ESP32-S3 Sense** (OV3660, 8 MB PSRAM) | captura, classificação, foto |
 
 Elas conversam por **UART**, não por Wi-Fi — as razões estão em
 [04-enlace-c3-cam.md](docs/04-enlace-c3-cam.md). Pelo fio passam o veredito, a
@@ -60,7 +62,7 @@ Pinagem completa, alimentação e as armadilhas de ADC e strapping estão em
 ```powershell
 pio run                        # compila o vaso e a câmera
 pio run -e c3        -t upload # grava o vaso (USB nativo)
-pio run -e cam       -t upload # grava a câmera (adaptador USB-TTL, GPIO0 no GND)
+pio run -e cam       -t upload # grava a câmera XIAO (USB-C dela)
 pio run -e autoteste -t upload # treina e mede, sem nada ligado na placa
 pio run -e ensaio    -t upload # le so o DHT22 e o nivel, sem mais nada
 pio run -e bancada   -t upload # o vaso com log detalhado, para calibrar
@@ -70,7 +72,8 @@ pio device monitor -e c3
 | Ambiente | Placa | Para que serve |
 | --- | --- | --- |
 | `c3` | ESP32-C3 | o vaso |
-| `cam` | ESP32-CAM | a câmera |
+| `cam` | XIAO ESP32-S3 Sense | a câmera |
+| `cam-aithinker` | ESP32-CAM | a câmera da v0.2, mantida compilando |
 | `autoteste` | ESP32-C3 | exercita o enlace e treina o classificador na placa |
 | `ensaio` | ESP32-C3 | bring-up de sensor, um subsistema por vez |
 | `bancada` | ESP32-C3 | o vaso com log detalhado |
@@ -154,12 +157,12 @@ FarmIO/
 
 ## Próximos passos
 
-1. **Gravar a ESP32-CAM.** Ela precisa de um adaptador USB-serial no header de
-   gravação — não tem USB próprio. É o que destrava o enlace, o veredito e a foto
-   de uma vez.
-2. **Apontar a câmera para uma planta de verdade** e para um objeto verde de
-   plástico. É esse número que diz se os pesos treinados valem alguma coisa fora
-   do gerador de cenas.
+1. **Ligar os três fios do enlace**: D0 da XIAO no GPIO20 do C3, D1 no GPIO21, e o
+   GND comum. As duas placas já estão gravadas; o fio é o que falta para a foto
+   chegar no app.
+2. **Calibrar a visão com fotos reais.** A primeira foto real já deu falso
+   positivo. Com planta na bancada: fotos com e sem planta pelo comando `F` da
+   câmera, e o retreino em cima delas.
 3. **Calibrar solo e tanque** com o ambiente `bancada`, na placa nova — os
    limiares vieram da DevKit V1 e o ADC do C3 tem outra curva.
 4. **Medir a corrente com amperímetro** e comparar com o `energia_ma` publicado no
