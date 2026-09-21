@@ -289,6 +289,13 @@
 // =====================================================================
 //  ENLACE C3 <-> ESP32-CAM
 // =====================================================================
+// Quantos bytes na FIFO de hardware da UART disparam a interrupcao. O padrao
+// do driver e 120 de 128: a FIFO enche em 11 ms a 115200 bps, entao sobram
+// ~0,7 ms para atender - e o C3 tem um so nucleo, dividido com o Wi-Fi.
+// Medido em 21/09/2026: 4 estouros de FIFO em 40 fotos, com o buffer de
+// 4 kB da UART sem nenhum estouro. Com 32, sobram ~8 ms de folga.
+#define ENLACE_FIFO_GATILHO 32
+
 #define ENLACE_BAUD 115200  // 8N1. Doze bytes de veredito levam ~1,2 ms
 
 // Cadencia da pergunta. Planta nao entra nem sai do vaso em dez

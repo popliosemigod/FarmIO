@@ -179,4 +179,119 @@ bool desserializa(const uint8_t* carga, uint8_t n, CargaPong& fora) {
   return true;
 }
 
+// ---------------------------------------------------------------------
+//  RemontaFoto
+// ---------------------------------------------------------------------
+RemontaFoto::RemontaFoto()
+    : buf_(0),
+      total_(0),
+      recebidos_(0),
+      vivoEm_(0),
+      pedidoEm_(0),
+      prox_(0),
+      reenvios_(0),
+      pedido_(false),
+      encerrada_(true),
+      motivo_("") {
+  memset(mapa_, 0, sizeof(mapa_));
+}
+
+uint16_t RemontaFoto::slots() const {
+  return (uint16_t)((total_ + FOTO_PEDACO_MAX - 1) / FOTO_PEDACO_MAX);
+}
+
+uint32_t RemontaFoto::contiguo() const {
+  const uint32_t d = (uint32_t)prox_ * FOTO_PEDACO_MAX;
+  return d < total_ ? d : total_;
+}
+
+void RemontaFoto::inicia(uint8_t* buf, uint32_t total, uint32_t agoraMs) {
+  buf_       = buf;
+  total_     = total;
+  recebidos_ = 0;
+  prox_      = 0;
+  vivoEm_    = agoraMs;
+  pedidoEm_  = agoraMs;
+  reenvios_  = 0;
+  pedido_    = false;
+  motivo_    = "";
+  memset(mapa_, 0, sizeof(mapa_));
+  encerrada_ = (buf == 0 || total == 0);
+  if (!encerrada_ && slots() > SLOTS_MAX) {
+    encerrada_ = true;
+    motivo_    = "foto maior que o mapa de pedacos";
+  }
+}
+
+RemontaFoto::Acao RemontaFoto::falha(const char* motivo) {
+  encerrada_ = true;
+  motivo_    = motivo;
+  return FALHOU;
+}
+
+RemontaFoto::Acao RemontaFoto::pedeReenvio(uint32_t agoraMs) {
+  // Ja pediu e o prazo de resposta ainda nao venceu: o resto da rajada que
+  // segue chegando nao e motivo para pedir de novo.
+  if (pedido_ && (uint32_t)(agoraMs - pedidoEm_) < ESPERA_MS) return NADA;
+  if (reenvios_ >= REENVIOS_MAX) return falha("pedaco perdido no fio, sem recuperar");
+  reenvios_++;
+  pedido_   = true;
+  pedidoEm_ = agoraMs;
+  vivoEm_   = agoraMs;  // o proximo "parado" so vale depois de ESPERA_MS
+  return PEDE_REENVIO;
+}
+
+RemontaFoto::Acao RemontaFoto::pedaco(uint32_t desloc, const uint8_t* dados, uint32_t n,
+                                      uint32_t agoraMs) {
+  if (encerrada_) return NADA;
+  vivoEm_ = agoraMs;  // qualquer quadro da foto prova que o fio esta vivo
+
+  // Pedaco que nao cabe no molde - fora do alinhamento, alem do fim ou com
+  // tamanho estranho - e ignorado. Um quadro com CRC certo e conteudo
+  // absurdo e improvavel; se vier, o CRC do JPEG inteiro ainda decide.
+  if (desloc % FOTO_PEDACO_MAX != 0 || desloc >= total_) return NADA;
+  const uint16_t slot = (uint16_t)(desloc / FOTO_PEDACO_MAX);
+  const uint32_t esperado =
+      (total_ - desloc) < FOTO_PEDACO_MAX ? (total_ - desloc) : (uint32_t)FOTO_PEDACO_MAX;
+  if (n != esperado) return NADA;
+  if (tem(slot)) return NADA;  // repetido
+
+  const bool buraco = slot > prox_;  // ha pedaco faltando antes deste
+  memcpy(buf_ + desloc, dados, n);
+  mapa_[slot >> 3] |= (uint8_t)(1 << (slot & 7));
+  recebidos_ += n;
+
+  const uint16_t antes = prox_;
+  while (prox_ < slots() && tem(prox_)) prox_++;
+  if (prox_ > antes) pedido_ = false;  // voltou ao trilho: novo buraco merece novo pedido
+
+  return buraco ? pedeReenvio(agoraMs) : NADA;
+}
+
+RemontaFoto::Acao RemontaFoto::fim(uint32_t total, uint16_t crc, uint32_t agoraMs) {
+  if (encerrada_) return NADA;
+  vivoEm_ = agoraMs;
+
+  if (total != total_) return falha("tamanho do FIM diferente do INICIO");
+  if (recebidos_ < total_) return pedeReenvio(agoraMs);
+
+  if (crc16(buf_, total_) != crc) {
+    // Todos os quadros passaram no CRC deles e a imagem, mesmo assim, esta
+    // errada. Nao ha como saber qual pedaco: recomeca do zero.
+    recebidos_ = 0;
+    prox_      = 0;
+    pedido_    = false;
+    memset(mapa_, 0, sizeof(mapa_));
+    return pedeReenvio(agoraMs);
+  }
+  encerrada_ = true;
+  return PRONTA;
+}
+
+RemontaFoto::Acao RemontaFoto::parado(uint32_t agoraMs) {
+  if (encerrada_) return NADA;
+  if ((uint32_t)(agoraMs - vivoEm_) < ESPERA_MS) return NADA;
+  return pedeReenvio(agoraMs);
+}
+
 }  // namespace Enlace

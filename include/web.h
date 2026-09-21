@@ -75,10 +75,11 @@ inline size_t jsonSensores(char* buf, size_t len) {
       "\"riscos\":%u,\"rssi\":%d,\"heap\":%lu,"
       "\"cam_enlace\":%s,\"cam_quadros\":%u,"
       "\"cam_falhas\":%u,\"cam_resets\":%u,\"cam_ms\":%u,"
+      "\"cam_bytes\":%lu,\"cam_eco\":%lu,\"cam_crc\":%lu,"
       "\"planta\":%s,\"planta_prob\":%u,\"planta_media\":%u,"
       "\"planta_classe\":%u,\"planta_cobertura\":%u,\"planta_flags\":%u,"
       "\"planta_calibrada\":%s,"
-      "\"foto_estado\":\"%s\",\"foto_numero\":%lu,"
+      "\"foto_estado\":\"%s\",\"foto_numero\":%lu,\"foto_reenvios\":%u,"
       "\"energia_teto_ma\":%u,\"energia_ma\":%u,\"anel_brilho\":%u}",
       FARMIO_NOME, FARMIO_VERSAO, (unsigned long)(millis() / 1000UL), temp, umid, L.soloAdc, faixa,
       L.soloFaixa, L.tanquePct, L.nivelAdc, L.nivelValido ? "true" : "false",
@@ -86,9 +87,11 @@ inline size_t jsonSensores(char* buf, size_t len) {
       (unsigned long)(B.tempoTotalMs / 1000UL), B.manual ? "true" : "false",
       Bomba::manualRestanteS(), (unsigned long)(B.manualTotalMs / 1000UL), B.manualAcionamentos,
       riscosAtivos, WiFi.RSSI(), (unsigned long)ESP.getFreeHeap(), V.enlaceOk ? "true" : "false",
-      V.quadros, V.falhas, V.resets, V.msCamera, V.temPlanta ? "true" : "false", V.probabilidade,
-      V.mediaFiltrada, V.classe, V.cobertura, V.flags, VISAO_CALIBRADA ? "true" : "false",
-      Camera::nomeEstadoFoto(f.estado), (unsigned long)f.numero, Energia::teto(),
+      V.quadros, V.falhas, V.resets, V.msCamera, (unsigned long)Camera::fio().bytes,
+      (unsigned long)Camera::fio().ecos, (unsigned long)Camera::receptor().contadores().crcErrado,
+      V.temPlanta ? "true" : "false", V.probabilidade, V.mediaFiltrada, V.classe, V.cobertura,
+      V.flags, VISAO_CALIBRADA ? "true" : "false", Camera::nomeEstadoFoto(f.estado),
+      (unsigned long)f.numero, f.reenvios, Energia::teto(),
       Energia::estimativaMa(V.enlaceOk, Anel::brilhoAtual(), B.ligada), Anel::brilhoAtual());
 }
 
@@ -256,6 +259,15 @@ async function tick(){
    (d.planta_cobertura/10).toFixed(0)+'% de verde · '+d.cam_quadros+' quadros · '+
    d.cam_falhas+' falhas · '+d.cam_resets+' resets'+
    ((d.planta_flags&1)?' · LUZ BAIXA':'');
+
+  // Sem enlace, a linha de detalhe vira diagnostico do fio. Em campo nao ha
+  // monitor serial: e esta linha que diz se o defeito e o curto TX-RX, a
+  // camera sem energia ou um fio ruim - tres maos diferentes na bancada.
+  if(!d.cam_enlace){
+   $('pd').textContent=d.cam_eco>0?'fio em curto: o vaso ouve o proprio sinal (TX e RX ligados um no outro)'
+    :d.cam_bytes==0?'nada chega pelo fio: camera sem energia, ou D0 fora do GPIO20'
+    :d.cam_crc>0?'chega sinal, mas com erro: fio ruim':'a camera nao responde';
+  }
 
   // Energia: a barra e o quanto do orcamento da porta ja esta gasto.
   $('e').textContent=d.energia_ma;

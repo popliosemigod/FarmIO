@@ -241,6 +241,31 @@ static camera_fb_t* capturaFresca() {
   return esp_camera_fb_get();
 }
 
+// A ultima foto fica guardada numa copia propria: o buffer do driver da
+// camera tem que voltar para a fila, e o vaso pode pedir reenvio de um
+// pedaco depois que o envio terminou. Uma foto so; a proxima a substitui.
+static uint8_t* g_cop      = nullptr;
+static uint32_t g_copLen   = 0;
+static uint16_t g_copCrc   = 0;
+static uint32_t g_reenvios = 0;
+
+// Do byte 'desde' ate o fim, e o FIM. Serve ao primeiro envio (desde = 0)
+// e a todo reenvio.
+static void transmite(uint32_t desde) {
+  uint8_t c[Enlace::CARGA_MAX];
+  for (uint32_t desloc = desde; desloc < g_copLen; desloc += Enlace::FOTO_PEDACO_MAX) {
+    uint32_t n = g_copLen - desloc;
+    if (n > Enlace::FOTO_PEDACO_MAX) n = Enlace::FOTO_PEDACO_MAX;
+    Enlace::poe32(c, desloc);
+    memcpy(c + 4, g_cop + desloc, n);
+    envia(Enlace::TIPO_FOTO_PEDACO, c, (uint8_t)(4 + n));
+    feedLoopWDT();  // a foto leva 2 a 3 s; o watchdog do loop, 5
+  }
+  Enlace::poe32(c, g_copLen);
+  Enlace::poe16(c + 4, g_copCrc);
+  envia(Enlace::TIPO_FOTO_FIM, c, Enlace::FOTO_FIM_BYTES);
+}
+
 static void enviaFoto() {
   if (!g_cameraOk) {
     enviaErroFoto(Enlace::FOTO_ERRO_SEM_CAMERA);
@@ -260,29 +285,48 @@ static void enviaFoto() {
   }
   const uint16_t msCaptura = (uint16_t)(millis() - t0);
 
+  // Copia antes de devolver o buffer do driver. Sem memoria para a copia, a
+  // foto nao sai: mandar sem poder reenviar seria a versao frágil de novo.
+  free(g_cop);
+  g_cop = psramFound() ? (uint8_t*)ps_malloc(fb->len) : (uint8_t*)malloc(fb->len);
+  if (!g_cop) {
+    g_copLen = 0;
+    esp_camera_fb_return(fb);
+    enviaErroFoto(Enlace::FOTO_ERRO_SEM_COPIA);
+    return;
+  }
+  memcpy(g_cop, fb->buf, fb->len);
+  g_copLen            = (uint32_t)fb->len;
+  g_copCrc            = Enlace::crc16(g_cop, g_copLen);
+  const uint16_t larg = (uint16_t)fb->width;
+  const uint16_t alt  = (uint16_t)fb->height;
+  esp_camera_fb_return(fb);
+
   uint8_t c[Enlace::CARGA_MAX];
-  Enlace::poe32(c, (uint32_t)fb->len);
-  Enlace::poe16(c + 4, (uint16_t)fb->width);
-  Enlace::poe16(c + 6, (uint16_t)fb->height);
+  Enlace::poe32(c, g_copLen);
+  Enlace::poe16(c + 4, larg);
+  Enlace::poe16(c + 6, alt);
   Enlace::poe16(c + 8, msCaptura);
   envia(Enlace::TIPO_FOTO_INICIO, c, Enlace::FOTO_INICIO_BYTES);
+  transmite(0);
 
-  for (uint32_t desloc = 0; desloc < fb->len; desloc += Enlace::FOTO_PEDACO_MAX) {
-    uint32_t n = fb->len - desloc;
-    if (n > Enlace::FOTO_PEDACO_MAX) n = Enlace::FOTO_PEDACO_MAX;
-    Enlace::poe32(c, desloc);
-    memcpy(c + 4, fb->buf + desloc, n);
-    envia(Enlace::TIPO_FOTO_PEDACO, c, (uint8_t)(4 + n));
-    feedLoopWDT();  // a foto leva 2 a 3 s; o watchdog do loop, 5
+  Serial.printf("[cam] foto %lu: %ux%u, %u B, captura em %u ms\n", (unsigned long)++g_fotos, larg,
+                alt, (unsigned)g_copLen, msCaptura);
+}
+
+static void reenviaFoto(const Enlace::Quadro& q) {
+  if (q.n < Enlace::FOTO_REENVIA_BYTES) return;
+  const uint32_t desde = Enlace::pega32(q.carga);
+  const uint32_t total = Enlace::pega32(q.carga + 4);
+  // A trava do tamanho: se o vaso fala de outra foto, nao se remenda uma na outra.
+  if (!g_cop || total != g_copLen || desde > g_copLen) {
+    enviaErroFoto(Enlace::FOTO_ERRO_SEM_COPIA);
+    return;
   }
-
-  Enlace::poe32(c, (uint32_t)fb->len);
-  Enlace::poe16(c + 4, Enlace::crc16(fb->buf, fb->len));
-  envia(Enlace::TIPO_FOTO_FIM, c, Enlace::FOTO_FIM_BYTES);
-
-  Serial.printf("[cam] foto %lu: %ux%u, %u B, captura em %u ms\n", (unsigned long)++g_fotos,
-                fb->width, fb->height, (unsigned)fb->len, msCaptura);
-  esp_camera_fb_return(fb);
+  g_reenvios++;
+  Serial.printf("[cam] reenvio %lu: do byte %lu de %lu\n", (unsigned long)g_reenvios,
+                (unsigned long)desde, (unsigned long)total);
+  transmite(desde);
 }
 
 static void trata(const Enlace::Quadro& q) {
@@ -314,6 +358,7 @@ static void trata(const Enlace::Quadro& q) {
     }
 
     case Enlace::TIPO_PEDE_FOTO: enviaFoto(); break;
+    case Enlace::TIPO_FOTO_REENVIA: reenviaFoto(q); break;
 
     case Enlace::TIPO_CONFIG: {
       // O vaso e o dono dos limiares: eles vivem no config.h dele e sao
