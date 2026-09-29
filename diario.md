@@ -710,3 +710,57 @@ e em terra encharcada) e de tanque (vazio e cheio), pelo ambiente `bancada`.
 deve entregar algo em torno de 2900–3100 no ar e 1100–1300 em terra saturada. Se
 a faixa medida for muito mais estreita que isso, a suspeita é alimentação em 5 V
 com divisor, ou sensor com verniz danificado.
+
+---
+
+### 2026-09-29 — Reconhecimento de planta: qual, não só se
+
+**Alvo:** Henrique pediu uma base de plantas já rotulada, vinda da internet,
+para a câmera do vaso "ter mais utilidade" — complementando, não substituindo,
+o classificador de bordo que só responde "tem planta ou não" (docs/05).
+
+**Previsão:** um modelo pré-treinado no PlantVillage via `transformers`
+(`pipeline("image-classification", ...)`) deveria funcionar direto, sem
+código extra — é o caminho documentado no card de qualquer modelo da Hugging
+Face.
+
+**O que foi feito:** `scripts/reconhece_planta.py`, que pede a foto pelo
+mesmo caminho HTTP que o app do celular já usa (`POST /foto` →
+`GET /foto/estado` → `GET /foto.jpg`), salva em `evidencias/reconhecimento/` e
+classifica com `linkanjarad/mobilenet_v2_1.0_224-plant-disease-identification`
+(38 classes do PlantVillage, ~14 MB, cacheado após o primeiro uso).
+
+**Medido:** o caminho "direto" **falhou**. `pipeline()` explodiu com
+`ValueError: Unrecognized image processor` — o `preprocessor_config.json` do
+repositório declara `"image_processor_type": "MobileNetV2FeatureExtractor"`, um
+nome de classe que o `transformers` 5.17.0 não reconhece mais.
+
+**Divergência:** o card do modelo (escrito para uma versão mais antiga do
+`transformers`) e a biblioteca instalada hoje divergem — API drift de
+terceiro, não erro deste script. A correção foi carregar o modelo com
+`AutoModelForImageClassification` e fazer o pré-processamento à mão, com os
+MESMOS números que estão no `preprocessor_config.json` (resize 256, crop
+central 224×224, normalização 0,5/0,5) — o card, sem depender da classe que
+sumiu.
+
+**Decisão:** documentado em detalhe em
+[`docs/07-reconhecimento-de-planta.md`](docs/07-reconhecimento-de-planta.md#um-detalhe-de-biblioteca-que-valeu-a-pena-documentar),
+porque é o tipo de defeito que reaparece silenciosamente a cada atualização de
+biblioteca. Smoke test rodado contra
+`evidencias/2026-09-21-xiao/03-q18-com-ajuste-ov3660.jpg` (a mesma foto do
+falso positivo do docs/05) confirma o caminho de código:
+
+```
+43.6%  Tomato with Late Blight
+15.7%  Bell Pepper with Bacterial Spot
+11.7%  Tomato with Early Blight
+```
+
+A foto é de uma impressora 3D — o resultado é o mesmo tipo de falso positivo
+que o docs/05 já documentou para o classificador de bordo, só que no
+classificador novo. Prova o código, não a qualidade do reconhecimento.
+
+**Evidência:** saída dos dois smoke tests (`classifica()` chamada direto,
+sem o vaso ligado) em `docs/07-reconhecimento-de-planta.md`. **O que não está
+provado:** o caminho HTTP nunca rodou contra o vaso de verdade, e nenhuma
+foto de planta real passou pelo classificador novo ainda.

@@ -180,7 +180,8 @@ FarmIO/
 │   ├── main_autoteste.cpp  treino e medição na placa
 │   └── cenas.cpp           desenho das cenas sintéticas
 ├── scripts/
-│   └── calibra_solo.py só aceita a leitura do solo depois de ela estabilizar
+│   ├── calibra_solo.py    só aceita a leitura do solo depois de ela estabilizar
+│   └── reconhece_planta.py  qual planta, e se está doente — modelo do PC, não da placa
 ├── docs/               herança, hardware, lógica, enlace, visão, energia
 │   └── img/            fotos do vaso e do app
 └── diario.md           previsto × medido, a cada iteração
@@ -200,6 +201,8 @@ FarmIO/
   características, o treino na placa e as quatro iterações até o modelo atual
 - [O projeto inteiro numa porta USB](docs/06-energia-usb.md) — o orçamento de
   corrente, o que cabe e o que não cabe
+- [Reconhecimento de planta](docs/07-reconhecimento-de-planta.md) — qual
+  planta, e se está doente, com um segundo classificador que roda no PC
 - [Diário](diario.md) — cada iteração com previsto ao lado de medido
 
 ## Próximos passos

@@ -28,6 +28,10 @@ evidencias/**/*.jpg
 evidencias/**/*.png
 evidencias/**/*.mp4
 evidencias/**/*.wav
+# catalogo.csv de scripts/reconhece_planta.py: cresce a cada foto pedida, e
+# junto com ele cresce a foto que documenta - mesma razao de nao versionar
+# o jpg.
+evidencias/**/*.csv
 !evidencias/**/.gitkeep
 
 # ---- CAD / fabricacao ----
