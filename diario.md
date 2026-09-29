@@ -764,3 +764,27 @@ classificador novo. Prova o código, não a qualidade do reconhecimento.
 sem o vaso ligado) em `docs/07-reconhecimento-de-planta.md`. **O que não está
 provado:** o caminho HTTP nunca rodou contra o vaso de verdade, e nenhuma
 foto de planta real passou pelo classificador novo ainda.
+
+---
+
+### 2026-09-29 — Baixar a foto para a galeria do celular
+
+**Alvo:** no meio da sessão anterior, Henrique decidiu usar sempre o celular
+(Galaxy A14) para os testes e pediu que fotos e vídeos cheguem na galeria do
+aparelho, com liberdade para escolher a forma.
+
+**O que foi feito:** um botão "Baixar" ao lado do "Tirar foto" já existente em
+`web.h`, com o atributo HTML `download` apontando para `/foto.jpg?n=<numero>`.
+Não é integração com a galeria — é fazer o navegador salvar o arquivo pela via
+normal de downloads do Android, que a galeria de fábrica (e a da Samsung, no
+A14) já indexa sozinha, sem app e sem ajuste.
+
+**Medido:** `pio run -e c3` compila limpo (899 kB de flash, 68,6% — sem
+mudança relevante frente à entrada anterior).
+
+**Decisão:** nenhuma mudança de protocolo ou de firmware da câmera — é só a
+página do vaso, que já servia `/foto.jpg`, ganhando um link a mais.
+
+**O que não está provado:** ninguém tocou no botão "Baixar" num celular de
+verdade ainda. O comportamento esperado (salvar em Download, aparecer na
+galeria) é conhecido do Android em geral, não medido neste vaso.

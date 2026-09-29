@@ -138,6 +138,8 @@ padding:10px;border-radius:12px;margin-bottom:12px;display:none}
 background:#173a22;color:var(--txt);font:inherit;font-size:15px;font-weight:600;cursor:pointer}
 .bt.parar{background:#4a1a1a;border-color:#8a2e2e}
 .bt:disabled{opacity:.5}
+.linha{display:flex;gap:8px}
+.linha .bt{flex:1;text-align:center;text-decoration:none;box-sizing:border-box}
 img.foto{width:100%;border-radius:10px;margin-top:10px;display:block;background:#000}
 .pe{color:#8fa088;font-size:11px;text-align:center;margin-top:16px}
 .on{color:var(--verde)}
@@ -159,7 +161,10 @@ img.foto{width:100%;border-radius:10px;margin-top:10px;display:block;background:
 <img class=foto id=foto alt="foto da camera do vaso" hidden>
 <div class=barra id=fbar hidden><i id=fb></i></div>
 <div class=nota id=fi>nenhuma foto ainda</div>
-<button class=bt id=btnf>Tirar foto</button></div>
+<div class=linha>
+<button class=bt id=btnf>Tirar foto</button>
+<a class=bt id=btnBaixar href=# download="farmio.jpg" hidden>Baixar</a>
+</div></div>
 <div class="carta larga"><div class=rot>Energia</div><div class=val><span id=e>--</span><span class=un> mA estimados</span></div>
 <div class=barra><i id=eb></i></div><div class=rot id=ed></div></div>
 </div>
@@ -196,9 +201,14 @@ $('btnb').onclick=async()=>{
 
 // ---- Foto --------------------------------------------------------------
 function mostraFoto(d){
- const im=$('foto');im.src='/foto.jpg?n='+d.numero;im.hidden=false;
+ const url='/foto.jpg?n='+d.numero;
+ const im=$('foto');im.src=url;im.hidden=false;
  $('fi').textContent=d.largura+'x'+d.altura+' · '+(d.total/1024).toFixed(1)+' kB · '+
   (d.ms/1000).toFixed(1)+' s pelo fio';
+ // download: forca o navegador a salvar em vez de so mostrar. No
+ // celular isso cai na pasta Download, que a galeria de fabrica
+ // (a do Android e a da Samsung) indexa sozinha, sem app nem ajuste.
+ const bb=$('btnBaixar');bb.href=url;bb.download='farmio-'+d.numero+'.jpg';bb.hidden=false;
 }
 async function acompanhaFoto(){
  try{

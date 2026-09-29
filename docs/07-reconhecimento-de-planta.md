@@ -1,5 +1,12 @@
 # Reconhecimento de planta
 
+> **Atualizado em 29/09/2026:** o app já tinha "Tirar foto"; ganhou também
+> "Baixar" — Henrique decidiu usar sempre o celular (um Galaxy A14) para os
+> testes, e pediu que fotos e vídeos cheguem na galeria do aparelho.
+> `download` no link já faz isso, sem precisar de app nem de integração
+> nenhuma: o Android salva na pasta Download, que a galeria de fábrica indexa
+> sozinha.
+
 O vaso já sabia responder "há planta na frente ou não" (docs/05, o
 classificador de dez características). O que faltava — pedido em 29/09/2026 —
 era **qual** planta, e se ela está doente. Este documento é sobre

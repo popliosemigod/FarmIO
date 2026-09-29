@@ -60,7 +60,8 @@ repositório próprio; este é o do FarmIO.
 - **conhece o próprio orçamento de corrente** e ajusta o brilho do anel ao que a
   porta USB aguenta, em vez de descobrir o limite reiniciando;
 - alerta em três canais: tela, anel de LED e página web;
-- **tira uma foto quando o app pede** — pelo fio, sem a câmera precisar de rede;
+- **tira uma foto quando o app pede** — pelo fio, sem a câmera precisar de rede — e
+  deixa **baixar** para a galeria do celular com um toque;
 - **liga e desliga a bomba por um botão no app**, sem mexer na lógica automática e
   sem passar por cima da proteção contra bomba a seco;
 - **funciona em campo aberto só com um celular**: tem rede própria sempre no ar, e
