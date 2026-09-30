@@ -1,0 +1,29 @@
+# Declaração de visão do FarmIO — LAB_PROMPT_visao.md, passo 2.
+#
+# Módulo compartilhado do laboratório em Jaspy/visao/ (repositório
+# separado — "um repositório por projeto", CLAUDE.md do laboratório).
+# Ver Jaspy/visao/FONTES.md para de onde vem cada fonte citada abaixo.
+
+projeto: farmio
+perfil: preciso  # Jaspy/visao/perfis/preciso.yaml
+
+capacidades:
+  - nome: tem_planta_na_frente
+    onde: "placa (ESP32-C3, lib/farmio_visao/ — 10 características, regressão logística)"
+    status: confirmado
+    medido: "97,9% de acerto no conjunto reservado sintético, 0 falso negativo, 11,5 ms/quadro (ensaio 09/09/2026)"
+    referencia: docs/05-visao-planta.md
+    aviso: "pesos treinados em cena SINTÉTICA, ainda não recalibrados com foto real — ver docs/05, seção 'o que esses 97,9% valem'"
+
+  - nome: identificacao_de_especie
+    onde: "PC, sob demanda (scripts/reconhece_planta.py)"
+    status: planejado  # nao ha modelo dedicado a especie ainda, so cultura x doenca
+    aviso: "Pl@ntNet API é candidato (ver Jaspy/visao/FONTES.md) — grátis só até 500 consultas/dia e só para uso sem fins lucrativos, e exige rede que a câmera do vaso hoje não tem"
+
+  - nome: saude_da_planta
+    onde: "PC, sob demanda (scripts/reconhece_planta.py, modelo de terceiros HF treinado no PlantVillage)"
+    status: confirmado_mas_nao_auditado
+    aviso: "PlantVillage é fundo de laboratório — acurácia cai para ~31% fora dele (ver Jaspy/visao/FONTES.md). Script já avisa 'não auditado para decisão de produção'. Substituto candidato: avaliar contra PlantDoc/Healthy-Wilted-Houseplant quando houver foto real do próprio vaso."
+
+pasta_de_fotos_de_teste: evidencias/reconhecimento/teste
+roteiro: "repositório Jaspy, visao/ROTEIRO-FOTOS.md"
